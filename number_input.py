@@ -1,12 +1,12 @@
 """Reusable bounded numeric slider with circular step buttons."""
 
 import math
+import customtkinter as ctk
 import tkinter as tk
-from decimal import Decimal
-from tkinter import ttk
+from decimal import Decimal, ROUND_HALF_UP
 
 
-class NumberInput(ttk.Frame):
+class NumberInput(ctk.CTkFrame):
     """Slider with decrement/increment buttons and a displayed value."""
 
     def __init__(self, master, variable, minimum, maximum, step=1, length=200):
@@ -17,28 +17,25 @@ class NumberInput(ttk.Frame):
         self.step = self._validated_step(step)
         if self.minimum >= self.maximum:
             raise ValueError("minimum must be less than maximum")
+        self._syncing = False
 
-        style = ttk.Style(self)
-        background = style.lookup("TFrame", "background") or "#f0f0f0"
-        foreground = style.lookup("TLabel", "foreground") or "#333333"
-        self._make_circle_button("-", -1, background, foreground).pack(
-            side="left", padx=(0, 4))
-
-        self.scale = tk.Scale(
-            self, variable=variable, from_=self.minimum, to=self.maximum,
-            resolution=self.step, orient="horizontal", showvalue=False,
-            length=length, highlightthickness=0, bd=0)
+        ctk.CTkButton(
+            self, text="-", width=28, height=28, corner_radius=14,
+            command=lambda: self._step(-1)).pack(side="left", padx=(0, 4))
+        self.scale = ctk.CTkSlider(
+            self, from_=self.minimum, to=self.maximum,
+            command=self._on_slider, width=length)
         self.scale.pack(side="left", fill="x", expand=True)
-
-        self._make_circle_button("+", 1, background, foreground).pack(
-            side="left", padx=(4, 6))
-        self.value_text = tk.StringVar(self)
-        ttk.Label(self, textvariable=self.value_text, width=8,
-                  anchor="e").pack(side="right")
+        ctk.CTkButton(
+            self, text="+", width=28, height=28, corner_radius=14,
+            command=lambda: self._step(1)).pack(side="left", padx=(4, 6))
+        self.value_label = ctk.CTkLabel(self, text="", width=56, anchor="e")
+        self.value_label.pack(side="right")
 
         self._precision = max(
             0, -Decimal(str(self.step)).normalize().as_tuple().exponent)
         self._trace_id = variable.trace_add("write", self._update_value)
+        self.scale.set(float(variable.get()))
         self._update_value()
 
     @staticmethod
@@ -64,39 +61,45 @@ class NumberInput(ttk.Frame):
         low, high = Decimal(str(minimum)), Decimal(str(maximum))
         return float(min(high, max(low, current + delta)))
 
-    def _make_circle_button(self, label, direction, background, foreground):
-        button = tk.Canvas(
-            self, width=24, height=24, highlightthickness=0, bd=0,
-            background=background, cursor="hand2", takefocus=True)
-        button.create_oval(
-            2, 2, 22, 22, outline=foreground, fill=background, width=1)
-        button.create_text(
-            12, 12, text=label, fill=foreground,
-            font=("TkDefaultFont", 10, "bold"))
-        button.bind(
-            "<Button-1>",
-            lambda _event: self._step(direction))
-        button.bind(
-            "<KeyPress-space>",
-            lambda _event: self._step(direction))
-        button.bind(
-            "<KeyPress-Return>",
-            lambda _event: self._step(direction))
-        return button
-
     def _step(self, direction):
         value = self._stepped_value(
             self.variable.get(), self.minimum, self.maximum,
             self.step, direction)
-        self.scale.set(value)
+        self.variable.set(value)
+
+    def _snap(self, value):
+        low = Decimal(str(self.minimum))
+        step = Decimal(str(self.step))
+        count = (
+            (Decimal(str(value)) - low) / step
+        ).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        snapped = low + count * step
+        return float(min(Decimal(str(self.maximum)), max(low, snapped)))
+
+    def _on_slider(self, value):
+        if self._syncing:
+            return
+        snapped = self._snap(value)
+        self._syncing = True
+        try:
+            self.scale.set(snapped)
+            self.variable.set(snapped)
+        finally:
+            self._syncing = False
 
     def _update_value(self, *_args):
         try:
             value = float(self.variable.get())
         except (tk.TclError, TypeError, ValueError):
-            self.value_text.set("")
+            self.value_label.configure(text="")
             return
-        self.value_text.set(f"{value:.{self._precision}f}")
+        self.value_label.configure(text=f"{value:.{self._precision}f}")
+        if not self._syncing:
+            self._syncing = True
+            try:
+                self.scale.set(value)
+            finally:
+                self._syncing = False
 
     def destroy(self):
         try:

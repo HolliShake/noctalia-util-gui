@@ -38,6 +38,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser, messagebox, simpledialog
 from number_input import NumberInput
@@ -54,6 +55,19 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Source definitions
 # ---------------------------------------------------------------------------
+
+def _labeled_frame(parent, text, padding=6):
+    section = ctk.CTkFrame(parent)
+    section.pack(fill="x", padx=6, pady=6)
+    ctk.CTkLabel(
+        section, text=text, anchor="w",
+        font=ctk.CTkFont(weight="bold")).pack(
+            fill="x", padx=padding, pady=(padding, 2))
+    content = ctk.CTkFrame(section, fg_color="transparent")
+    content.pack(fill="x", padx=padding, pady=(0, padding))
+    return content
+
+
 HOME = os.path.expanduser("~")
 XDG_CONFIG_HOME = os.path.expanduser(
     os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")))
@@ -1144,43 +1158,45 @@ class App:
         self.keybind_iids = {}
         self.dynamic_schema_edits = {}
 
-        self.notebook = ttk.Notebook(root)
+        self.notebook = ctk.CTkTabview(root)
         self.notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
         self._build_all_tabs()
 
-        bar = ttk.Frame(root)
+        bar = ctk.CTkFrame(root, fg_color="transparent")
         bar.pack(fill="x", padx=5, pady=(0, 4))
-        ttk.Button(bar, text="Save All",
-                   command=self._save_all).pack(side="right")
-        ttk.Button(bar, text="Validate All (no save)",
-                   command=self._validate_all).pack(side="right", padx=4)
-        ttk.Button(bar, text="Reload",
-                   command=self._reload_all).pack(side="left")
-        ttk.Button(bar, text="Umbriel Schema Explorer",
-                   command=self._open_schema_explorer).pack(side="left", padx=6)
+        ctk.CTkButton(
+            bar, text="Save All", command=self._save_all).pack(side="right")
+        ctk.CTkButton(
+            bar, text="Validate All (no save)",
+            command=self._validate_all).pack(side="right", padx=4)
+        ctk.CTkButton(
+            bar, text="Reload", command=self._reload_all).pack(side="left")
+        ctk.CTkButton(
+            bar, text="Umbriel Schema Explorer",
+            command=self._open_schema_explorer).pack(side="left", padx=6)
 
-        self.status = ttk.Label(root, anchor="w", padding=(6, 2))
+        self.status = ctk.CTkLabel(root, anchor="w")
         self.status.pack(fill="x", side="bottom")
         self._set_status(self._describe_loaded())
 
     # ------------------------------------------------------------------
     def _open_schema_explorer(self):
-        win = tk.Toplevel(self.root)
+        win = ctk.CTkToplevel(self.root)
         win.title("Umbriel Configuration Schema Explorer")
         win.geometry("1050x680")
-        top = ttk.Frame(win, padding=8)
-        top.pack(fill="x")
-        ttk.Label(
+        top = ctk.CTkFrame(win, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=8)
+        ctk.CTkLabel(
             top,
             text="Live schema from the installed Umbriel binary "
                  "(umbriel config schema --json)"
         ).pack(side="left")
-        status = ttk.Label(win, text="Loading schema…", padding=(8, 2))
-        status.pack(fill="x")
+        status = ctk.CTkLabel(win, text="Loading schema…", anchor="w")
+        status.pack(fill="x", padx=8, pady=(0, 4))
 
-        body = ttk.Frame(win, padding=8)
-        body.pack(fill="both", expand=True)
+        body = ctk.CTkFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=8, pady=4)
         columns = ("type", "default", "range", "values", "status")
         tree = ttk.Treeview(body, columns=columns, show="tree headings")
         tree.heading("#0", text="Configuration key")
@@ -1201,7 +1217,7 @@ class App:
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
 
-        details = tk.Text(win, height=6, wrap="word", state="disabled")
+        details = ctk.CTkTextbox(win, height=120, wrap="word", state="disabled")
         details.pack(fill="x", padx=8, pady=(0, 8))
 
         rows_by_iid = {}
@@ -1229,7 +1245,7 @@ class App:
         tree.bind("<<TreeviewSelect>>", show_details)
 
         def refresh():
-            status.config(text="Querying installed Umbriel schema…")
+            status.configure(text="Querying installed Umbriel schema…")
             win.update_idletasks()
             try:
                 payload = fetch_umbriel_schema()
@@ -1286,9 +1302,11 @@ class App:
                 tree.tag_configure("unknown", foreground="#b06020")
                 version = payload.get("version", "unknown") if isinstance(payload, dict) else "unknown"
                 revision = payload.get("revision", "unknown") if isinstance(payload, dict) else "unknown"
-                status.config(text=f"{len(rows)} schema keys · Umbriel {version} · revision {revision}")
+                status.configure(
+                    text=f"{len(rows)} schema keys · Umbriel {version} · "
+                         f"revision {revision}")
             except Exception as exc:
-                status.config(text=f"Schema unavailable: {exc}")
+                status.configure(text=f"Schema unavailable: {exc}")
                 messagebox.showerror("Schema Explorer", str(exc), parent=win)
 
         def edit_selected():
@@ -1328,10 +1346,15 @@ class App:
                 messagebox.showerror("Invalid TOML value", str(exc), parent=win)
                 return
             self.dynamic_schema_edits[key] = parsed
-            status.config(text=f"Pending edit: {key} = {toml_value(parsed)}. Save All to write it.")
+            status.configure(
+                text=f"Pending edit: {key} = {toml_value(parsed)}. "
+                     "Save All to write it.")
             show_details()
-        ttk.Button(top, text="Edit selected key…", command=edit_selected).pack(side="right", padx=5)
-        ttk.Button(top, text="Refresh schema", command=refresh).pack(side="right")
+        ctk.CTkButton(
+            top, text="Edit selected key…", command=edit_selected).pack(
+                side="right", padx=5)
+        ctk.CTkButton(
+            top, text="Refresh schema", command=refresh).pack(side="right")
         refresh()
 
     # ------------------------------------------------------------------
@@ -1351,31 +1374,24 @@ class App:
     # ------------------------------------------------------------------
     def _build_all_tabs(self):
         for category, sections in UMBRIEL_SCHEMA.items():
+            self.notebook.add(category)
+            tab = self.notebook.tab(category)
             if category == "KeyBinding":
-                tab = self._build_keybind_tab()
+                self._build_keybind_tab(tab)
             else:
-                tab = ttk.Frame(self.notebook)
                 self._build_category_tab(tab, category, sections or {})
-            self.notebook.add(tab, text=category)
 
         defined = set(UMBRIEL_SCHEMA.keys())
         for category in CATEGORY_SOURCES:
             if category in defined:
                 continue
-            tab = ttk.Frame(self.notebook)
+            self.notebook.add(category)
+            tab = self.notebook.tab(category)
             self._build_category_tab(tab, category, {})
-            self.notebook.add(tab, text=category)
 
     def _build_category_tab(self, tab, category, schema_sections):
-        canvas = tk.Canvas(tab, highlightthickness=0)
-        sb = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        inner = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=6, pady=6)
 
         if category == "Configuration":
             self._build_noctalia_configuration_info(inner)
@@ -1387,8 +1403,7 @@ class App:
                 for sec_name, opts in schema_sections.items():
                     if not opts:
                         continue
-                    lf = ttk.LabelFrame(inner, text=sec_name, padding=6)
-                    lf.pack(fill="x", padx=6, pady=6)
+                    lf = _labeled_frame(inner, sec_name)
                     for opt in opts:
                         self._create_schema_widget(lf, source_key, opt)
 
@@ -1406,8 +1421,7 @@ class App:
                     enabled = _get_dotted(display_cfg, "dock.enabled")
                 if enabled is None:
                     enabled = False
-                lf = ttk.LabelFrame(inner, text="Dock", padding=6)
-                lf.pack(fill="x", padx=6, pady=6)
+                lf = _labeled_frame(inner, "Dock")
                 self._create_discovered_widget(
                     lf, source_key, "dock.enabled", enabled,
                     default_only=default_only, label="Enable Dock (dock.enabled)")
@@ -1432,18 +1446,14 @@ class App:
                     (key, value, is_default))
 
             for sec_name, items in discovered.items():
-                lf = ttk.LabelFrame(inner, text=f"{src.name} · {sec_name}",
-                                    padding=6)
-                lf.pack(fill="x", padx=6, pady=6)
+                lf = _labeled_frame(inner, f"{src.name} · {sec_name}")
                 for key, value, is_default in items:
                     self._create_discovered_widget(
                         lf, source_key, key, value, default_only=is_default)
 
     def _build_noctalia_configuration_info(self, parent):
         src = self.sources["noctalia"]
-        info = ttk.LabelFrame(parent, text="Noctalia configuration files",
-                              padding=8)
-        info.pack(fill="x", padx=6, pady=6)
+        info = _labeled_frame(parent, "Noctalia configuration files", padding=8)
         lines = [
             f"User TOML files: {NOCTALIA_CONFIG_DIR}",
             f"GUI override file: {src.save_path}",
@@ -1475,8 +1485,8 @@ class App:
             if len(self.noctalia_parse_warnings) > 15:
                 lines.append(
                     f"  … and {len(self.noctalia_parse_warnings) - 15} more")
-        ttk.Label(info, text="\n".join(lines), justify="left",
-                  anchor="w", wraplength=900).pack(fill="x")
+        ctk.CTkLabel(info, text="\n".join(lines), justify="left",
+                     anchor="w", wraplength=900).pack(fill="x")
 
     def _schema_keys_for(self, source_key, category):
         if source_key != "umbriel":
@@ -1502,12 +1512,14 @@ class App:
             choices.append(cur)
         if len(choices) <= CHOICE_RADIO_MAX:
             for ch in choices:
-                ttk.Radiobutton(row, text=ch, variable=var,
-                                value=ch).pack(side="left", padx=2)
+                ctk.CTkRadioButton(
+                    row, text=ch, variable=var, value=ch).pack(
+                        side="left", padx=4)
         else:
-            width = min(40, max(12, max(len(c) for c in choices) + 2))
-            ttk.Combobox(row, textvariable=var, values=choices,
-                         state="readonly", width=width).pack(side="left")
+            width = min(320, max(120, max(len(c) for c in choices) * 8 + 24))
+            ctk.CTkComboBox(
+                row, variable=var, values=choices,
+                state="readonly", width=width).pack(side="left")
 
     def _choices_for(self, source_key, key, current):
         """Known options for a string setting, or None for free text."""
@@ -1538,9 +1550,9 @@ class App:
                 and not str(current).strip()):
             current = default
 
-        row = ttk.Frame(parent)
+        row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=2)
-        ttk.Label(row, text=label, width=32, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text=label, width=230, anchor="w").pack(side="left")
 
         choices = opt.get("choices")
         if typ == "text" and isinstance(current, str):
@@ -1550,7 +1562,7 @@ class App:
 
         if typ == "boolean":
             var = tk.BooleanVar(value=bool(current))
-            ttk.Checkbutton(row, variable=var).pack(side="left")
+            ctk.CTkCheckBox(row, text="", variable=var).pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "boolean"}
 
@@ -1581,7 +1593,7 @@ class App:
 
         elif typ == "text":
             var = tk.StringVar(value=str(current) if current is not None else "")
-            ttk.Entry(row, textvariable=var).pack(
+            ctk.CTkEntry(row, textvariable=var).pack(
                 side="left", fill="x", expand=True)
             self.vars[full] = var
             self.var_meta[full] = {"kind": "text"}
@@ -1589,7 +1601,7 @@ class App:
         elif typ == "list":
             list_val = current if isinstance(current, list) else (default or [])
             var = tk.StringVar(value=", ".join(str(x) for x in list_val))
-            ttk.Entry(row, textvariable=var).pack(
+            ctk.CTkEntry(row, textvariable=var).pack(
                 side="left", fill="x", expand=True)
             self.vars[full] = var
             self.var_meta[full] = {"kind": "list",
@@ -1597,14 +1609,15 @@ class App:
 
         elif typ == "color":
             var = tk.StringVar(value=str(current) if current else "#000000FF")
-            ttk.Entry(row, textvariable=var, width=12).pack(side="left")
-            swatch = tk.Label(row, width=3, relief="solid",
-                              bg=_color_preview(var.get()))
+            ctk.CTkEntry(row, textvariable=var, width=120).pack(side="left")
+            swatch = ctk.CTkLabel(
+                row, text="", width=32, height=28,
+                fg_color=_color_preview(var.get()), corner_radius=4)
             swatch.pack(side="left", padx=4)
 
             def _refresh(*_a, v=var, s=swatch):
                 try:
-                    s.config(bg=_color_preview(v.get()))
+                    s.configure(fg_color=_color_preview(v.get()))
                 except tk.TclError:
                     pass
             var.trace_add("write", _refresh)
@@ -1613,13 +1626,14 @@ class App:
                 c = colorchooser.askcolor()[1]
                 if c:
                     v.set(c.upper() + "FF")
-            ttk.Button(row, text="Pick…", command=_pick).pack(side="left")
+            ctk.CTkButton(row, text="Pick…", command=_pick).pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "color"}
 
         elif typ == "raw_aot":
-            txt = tk.Text(parent, height=8, wrap="none",
-                          font=("TkFixedFont", 10))
+            txt = ctk.CTkTextbox(
+                parent, height=160, wrap="none",
+                font=ctk.CTkFont(family="TkFixedFont", size=10))
             txt.pack(fill="both", expand=True, pady=(2, 6))
             if isinstance(current, list) and current:
                 txt.insert("1.0", serialize_aot(key, current))
@@ -1632,9 +1646,10 @@ class App:
         full = self._full_key(source_key, key)
         kind = infer_kind(value)
 
-        row = ttk.Frame(parent)
+        row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", pady=2)
-        ttk.Label(row, text=label or key, width=36, anchor="w").pack(side="left")
+        ctk.CTkLabel(
+            row, text=label or key, width=260, anchor="w").pack(side="left")
 
         choices = self._choices_for(source_key, key, value) \
             if kind == "text" else None
@@ -1644,17 +1659,19 @@ class App:
         if is_role:
             # Noctalia colour settings accept a palette role OR a hex colour.
             var = tk.StringVar(value=value)
-            ttk.Combobox(row, textvariable=var, values=NOCTALIA_COLOR_ROLES,
-                         width=28).pack(side="left")
+            ctk.CTkComboBox(
+                row, variable=var, values=NOCTALIA_COLOR_ROLES,
+                width=240).pack(side="left")
 
             def _pick_hex(v=var):
                 c = colorchooser.askcolor()[1]
                 if c:
                     v.set(c.upper())
-            ttk.Button(row, text="Hex…", command=_pick_hex).pack(
+            ctk.CTkButton(row, text="Hex…", command=_pick_hex).pack(
                 side="left", padx=4)
-            ttk.Label(row, text="palette role or #RRGGBB[AA]",
-                      foreground="#777").pack(side="left")
+            ctk.CTkLabel(
+                row, text="palette role or #RRGGBB[AA]",
+                text_color="#777777").pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "text"}
 
@@ -1669,26 +1686,27 @@ class App:
 
         elif kind == "boolean":
             var = tk.BooleanVar(value=bool(value))
-            ttk.Checkbutton(row, variable=var).pack(side="left")
+            ctk.CTkCheckBox(row, text="", variable=var).pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "boolean"}
 
         elif kind in ("int", "float"):
             var = tk.StringVar(value=str(value))
-            ttk.Entry(row, textvariable=var, width=14).pack(side="left")
+            ctk.CTkEntry(row, textvariable=var, width=140).pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "number", "number_type": kind}
 
         elif kind == "color":
             var = tk.StringVar(value=str(value))
-            ttk.Entry(row, textvariable=var, width=14).pack(side="left")
-            swatch = tk.Label(row, width=3, relief="solid",
-                              bg=_color_preview(var.get()))
+            ctk.CTkEntry(row, textvariable=var, width=140).pack(side="left")
+            swatch = ctk.CTkLabel(
+                row, text="", width=32, height=28,
+                fg_color=_color_preview(var.get()), corner_radius=4)
             swatch.pack(side="left", padx=4)
 
             def _refresh(*_a, v=var, s=swatch):
                 try:
-                    s.config(bg=_color_preview(v.get()))
+                    s.configure(fg_color=_color_preview(v.get()))
                 except tk.TclError:
                     pass
             var.trace_add("write", _refresh)
@@ -1697,21 +1715,22 @@ class App:
                 c = colorchooser.askcolor()[1]
                 if c:
                     v.set(c.upper() + "FF")
-            ttk.Button(row, text="Pick…", command=_pick).pack(side="left")
+            ctk.CTkButton(row, text="Pick…", command=_pick).pack(side="left")
             self.vars[full] = var
             self.var_meta[full] = {"kind": "color"}
 
         elif kind == "list":
             item_type = type(value[0]).__name__ if value else "str"
             var = tk.StringVar(value=", ".join(str(x) for x in value))
-            ttk.Entry(row, textvariable=var).pack(
+            ctk.CTkEntry(row, textvariable=var).pack(
                 side="left", fill="x", expand=True)
             self.vars[full] = var
             self.var_meta[full] = {"kind": "list", "item_type": item_type}
 
         elif kind == "aot":
-            txt = tk.Text(parent, height=6, wrap="none",
-                          font=("TkFixedFont", 10))
+            txt = ctk.CTkTextbox(
+                parent, height=120, wrap="none",
+                font=ctk.CTkFont(family="TkFixedFont", size=10))
             txt.pack(fill="both", expand=True, pady=(2, 6))
             txt.insert("1.0", serialize_aot(key, value))
             self.raw_widgets[full] = txt
@@ -1719,7 +1738,7 @@ class App:
 
         else:
             var = tk.StringVar(value=str(value))
-            ttk.Entry(row, textvariable=var).pack(
+            ctk.CTkEntry(row, textvariable=var).pack(
                 side="left", fill="x", expand=True)
             self.vars[full] = var
             self.var_meta[full] = {"kind": "text"}
@@ -1733,8 +1752,7 @@ class App:
     # ------------------------------------------------------------------
     # KeyBinding tab (Umbriel only)
     # ------------------------------------------------------------------
-    def _build_keybind_tab(self):
-        frame = ttk.Frame(self.notebook)
+    def _build_keybind_tab(self, frame):
         cols = ("key", "action", "options")
         tree = ttk.Treeview(frame, columns=cols, show="headings", height=18)
         for c, t, w in (("key", "Key", 180),
@@ -1745,7 +1763,7 @@ class App:
         tree.pack(fill="both", expand=True, padx=5, pady=5)
         self.keybind_tree = tree
 
-        bar = ttk.Frame(frame)
+        bar = ctk.CTkFrame(frame, fg_color="transparent")
         bar.pack(fill="x", padx=5, pady=5)
 
         def _add():
@@ -1773,15 +1791,14 @@ class App:
             if row in self.keybind_rows:
                 self.keybind_rows.remove(row)
 
-        ttk.Button(bar, text="Add", command=_add).pack(side="left")
-        ttk.Button(bar, text="Edit", command=_edit).pack(side="left", padx=4)
-        ttk.Button(bar, text="Remove", command=_remove).pack(side="left")
+        ctk.CTkButton(bar, text="Add", command=_add).pack(side="left")
+        ctk.CTkButton(bar, text="Edit", command=_edit).pack(
+            side="left", padx=4)
+        ctk.CTkButton(bar, text="Remove", command=_remove).pack(side="left")
 
         kb = self.sources["umbriel"].merged.get("keybinds")
         if isinstance(kb, dict):
             self._populate_keybinds(kb)
-        return frame
-
     def _populate_keybinds(self, kb_dict):
         self.keybind_tree.delete(*self.keybind_tree.get_children())
         self.keybind_rows.clear()
@@ -1817,26 +1834,32 @@ class App:
         if row is None:
             return
         kv, av, ov = row
-        dlg = tk.Toplevel(self.root)
+        dlg = ctk.CTkToplevel(self.root)
         dlg.title("Edit Keybind")
         dlg.transient(self.root)
 
-        ttk.Label(dlg, text="Key").grid(row=0, column=0, sticky="w", padx=6, pady=4)
-        k_e = ttk.Entry(dlg, textvariable=kv, width=30)
+        ctk.CTkLabel(dlg, text="Key").grid(
+            row=0, column=0, sticky="w", padx=6, pady=4)
+        k_e = ctk.CTkEntry(dlg, textvariable=kv, width=300)
         k_e.grid(row=0, column=1, padx=6, pady=4)
-        ttk.Label(dlg, text="Action").grid(row=1, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(dlg, textvariable=av, width=40).grid(row=1, column=1, padx=6, pady=4)
-        ttk.Label(dlg, text="Options").grid(row=2, column=0, sticky="w", padx=6, pady=4)
-        ttk.Entry(dlg, textvariable=ov, width=40).grid(row=2, column=1, padx=6, pady=4)
+        ctk.CTkLabel(dlg, text="Action").grid(
+            row=1, column=0, sticky="w", padx=6, pady=4)
+        ctk.CTkEntry(dlg, textvariable=av, width=400).grid(
+            row=1, column=1, padx=6, pady=4)
+        ctk.CTkLabel(dlg, text="Options").grid(
+            row=2, column=0, sticky="w", padx=6, pady=4)
+        ctk.CTkEntry(dlg, textvariable=ov, width=400).grid(
+            row=2, column=1, padx=6, pady=4)
 
         def _ok():
             tree.item(iid, values=(kv.get(), av.get(), ov.get()))
             dlg.destroy()
 
-        bf = ttk.Frame(dlg)
+        bf = ctk.CTkFrame(dlg, fg_color="transparent")
         bf.grid(row=3, column=0, columnspan=2, pady=8)
-        ttk.Button(bf, text="OK", command=_ok).pack(side="left", padx=4)
-        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
+        ctk.CTkButton(bf, text="OK", command=_ok).pack(side="left", padx=4)
+        ctk.CTkButton(
+            bf, text="Cancel", command=dlg.destroy).pack(side="left", padx=4)
         k_e.focus_set()
 
     # ------------------------------------------------------------------
@@ -2195,13 +2218,15 @@ class App:
     # ------------------------------------------------------------------
     def _set_status(self, text):
         try:
-            self.status.config(text=text)
+            self.status.configure(text=text)
         except Exception:
             pass
 
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    root = tk.Tk()
+    ctk.set_appearance_mode("system")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
     App(root)
     root.mainloop()
