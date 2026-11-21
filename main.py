@@ -27,6 +27,7 @@ Requires Python 3.11+ (tomllib), or ``tomli`` on 3.10 and below.
 
 import glob
 import io
+import re
 import json
 import hashlib
 import math
@@ -39,6 +40,7 @@ import subprocess
 import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, colorchooser, messagebox, simpledialog
+from number_input import NumberInput
 
 try:
     import tomllib
@@ -480,6 +482,25 @@ def _set_dotted(cfg, key, value):
     d[parts[-1]] = value
 
 
+def _delete_dotted(cfg, key):
+    parts = key.split(".")
+    parents = []
+    current = cfg
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            return
+        parents.append((current, part))
+        current = current[part]
+    if not isinstance(current, dict) or parts[-1] not in current:
+        return
+    del current[parts[-1]]
+    for parent, part in reversed(parents):
+        child = parent[part]
+        if not isinstance(child, dict) or child:
+            break
+        del parent[part]
+
+
 def _parse_kb_options(text):
     opts = {}
     for part in text.split(","):
@@ -687,7 +708,13 @@ def format_diagnostics(diags, raw):
 # Config source (load + prepare-write; write only after validation)
 # ---------------------------------------------------------------------------
 
+class ExternalChange(RuntimeError):
+    """The target file was modified by another program since it was loaded."""
+
+
 class ConfigSource:
+    loaded_data = None
+
     def __init__(self, key, spec):
         self.key = key
         self.name = spec["name"]
@@ -728,6 +755,10 @@ class ConfigSource:
             except Exception as exc:
                 self.load_errors.append(f"{path}: {exc}")
         self.loaded_fingerprint = self._fingerprint()
+        try:
+            self.loaded_data = self.read_disk()
+        except RuntimeError:
+            self.loaded_data = None
         return self.merged
 
     def read_disk(self):
@@ -739,8 +770,10 @@ class ConfigSource:
         except Exception as exc:
             raise RuntimeError(f"Could not parse {self.save_path}: {exc}")
 
-    def prepare_text(self, gui_cfg):
+    def prepare_text(self, gui_cfg, remove_keys=()):
         base = self.read_disk()
+        for key in remove_keys:
+            _delete_dotted(base, key)
         merged = deep_merge(base, gui_cfg, REPLACE_KEYS)
         return to_toml_string(merged)
 
@@ -749,10 +782,17 @@ class ConfigSource:
         os.makedirs(os.path.dirname(self.save_path) or ".", exist_ok=True)
         current = self._fingerprint()
         if current != self.loaded_fingerprint:
-            raise RuntimeError(
-                "The file changed on disk after it was loaded. Reload before saving "
-                "to avoid overwriting another program's changes."
-            )
+            # Programs such as Noctalia rewrite their state file right after
+            # a save (reformatting only). Only treat it as a conflict when the
+            # parsed content really differs from what we last saw.
+            try:
+                same = self.read_disk() == self.loaded_data
+            except RuntimeError:
+                same = False
+            if not same:
+                raise ExternalChange(
+                    "The file changed on disk after it was loaded.")
+            self.loaded_fingerprint = current
 
         old_exists = os.path.exists(self.save_path)
         old_mode = stat.S_IMODE(os.stat(self.save_path).st_mode) if old_exists else 0o600
@@ -772,6 +812,7 @@ class ConfigSource:
                 os.fsync(f.fileno())
             os.replace(temp_path, self.save_path)
             self.loaded_fingerprint = self._fingerprint()
+            self.loaded_data = tomllib.loads(text)
         except Exception:
             try:
                 os.unlink(temp_path)
@@ -800,8 +841,163 @@ def fetch_umbriel_schema():
         raise RuntimeError(f"Umbriel returned invalid schema JSON: {exc}")
 
 
+def _normalize_toml_11(text):
+    """Rewrite common TOML 1.1 constructs into TOML 1.0 for ``tomllib``.
+
+    * newlines / comments inside inline tables  -> collapsed onto one line
+    * trailing comma before ``}``               -> removed
+    * ``\\e`` and ``\\xHH`` escapes              -> ``\\u001b`` / ``\\u00HH``
+    """
+    out, i, n, stack = [], 0, len(text), []
+    while i < n:
+        c = text[i]
+        if text.startswith('"""', i) or text.startswith("'''", i):
+            q = text[i:i + 3]
+            j = i + 3
+            while j < n and not text.startswith(q, j):
+                j += 2 if (q == '"""' and text[j] == "\\") else 1
+            j = min(j + 3, n)
+            out.append(text[i:j])
+            i = j
+        elif c == '"':
+            j = i + 1
+            buf = ['"']
+            while j < n and text[j] != '"' and text[j] != "\n":
+                if text[j] == "\\" and j + 1 < n:
+                    nxt = text[j + 1]
+                    if nxt == "e":
+                        buf.append("\\u001b"); j += 2; continue
+                    if nxt == "x" and j + 3 < n:
+                        buf.append("\\u00" + text[j + 2:j + 4]); j += 4; continue
+                    buf.append(text[j:j + 2]); j += 2; continue
+                buf.append(text[j]); j += 1
+            if j < n and text[j] == '"':
+                buf.append('"'); j += 1
+            out.append("".join(buf))
+            i = j
+        elif c == "'":
+            j = i + 1
+            while j < n and text[j] not in "'\n":
+                j += 1
+            j = min(j + 1, n)
+            out.append(text[i:j])
+            i = j
+        elif c == "#":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            if "{" not in stack:
+                out.append(text[i:j])
+            i = j
+        elif c in "{[":
+            stack.append(c); out.append(c); i += 1
+        elif c in "}]":
+            if c == "}":
+                while out and not out[-1].strip():
+                    out.pop()
+                if out and out[-1] == ",":
+                    out.pop()
+            if stack:
+                stack.pop()
+            out.append(c); i += 1
+        elif c == "\n" and "{" in stack:
+            out.append(" "); i += 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+
+_TOML_HEADER_RE = re.compile(
+    r"""^\s*\[\[?\s*[A-Za-z0-9_\-."' ]+\s*\]\]?\s*(#.*)?$""")
+
+
+def _merge_lenient(base, new):
+    """Merge a parsed chunk into ``base``; arrays of tables are appended."""
+    for k, v in new.items():
+        cur = base.get(k)
+        if isinstance(cur, dict) and isinstance(v, dict):
+            _merge_lenient(cur, v)
+        elif isinstance(cur, list) and cur and isinstance(v, dict):
+            if isinstance(cur[-1], dict):
+                _merge_lenient(cur[-1], v)
+        elif (isinstance(cur, list) and isinstance(v, list)
+              and v and all(isinstance(x, dict) for x in v)):
+            cur.extend(v)
+        else:
+            base[k] = v
+
+
+def _toml_error_context(text, exc, radius=2):
+    m = re.search(r"line (\d+)", str(exc))
+    if not m:
+        return str(exc)
+    ln = int(m.group(1))
+    lines = text.splitlines()
+    lo, hi = max(0, ln - 1 - radius), min(len(lines), ln + radius)
+    snippet = "\n".join(
+        f"{'>' if i + 1 == ln else ' '} {i + 1:4}: {lines[i]}"
+        for i in range(lo, hi))
+    return f"{exc}\n{snippet}"
+
+
+def parse_toml_lenient(text):
+    """Parse TOML, tolerating TOML 1.1 syntax and isolated bad sections.
+
+    Returns ``(config | None, warnings, error_text)``.
+    """
+    try:
+        return tomllib.loads(text), [], None
+    except Exception as first_exc:
+        first_error = _toml_error_context(text, first_exc)
+
+    normalized = _normalize_toml_11(text)
+    try:
+        return tomllib.loads(normalized), [], None
+    except Exception:
+        pass
+
+    # Section-by-section salvage: a bad table no longer aborts everything.
+    chunks, header, body = [], None, []
+    for line in normalized.splitlines():
+        if _TOML_HEADER_RE.match(line):
+            chunks.append((header, body))
+            header, body = line, []
+        else:
+            body.append(line)
+    chunks.append((header, body))
+
+    config, warnings = {}, []
+    for header, body in chunks:
+        chunk_text = ("\n".join(([header] if header else []) + body)).strip()
+        if not chunk_text:
+            continue
+        try:
+            _merge_lenient(config, tomllib.loads(chunk_text))
+            continue
+        except Exception as exc:
+            chunk_err = str(exc)
+        # Retry line by line inside this section.
+        kept = 0
+        for line in body:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            try:
+                _merge_lenient(config, tomllib.loads(
+                    "\n".join(([header] if header else []) + [line])))
+                kept += 1
+            except Exception:
+                warnings.append(
+                    f"skipped in {header.strip() if header else '(root)'}: "
+                    f"{s[:80]}")
+        if kept == 0 and header:
+            warnings.append(f"section {header.strip()} not parsed: {chunk_err}")
+    if config:
+        return config, warnings, None
+    return None, warnings, first_error
+
+
 def fetch_noctalia_full_config():
-    """Return Noctalia's full effective config without credential values."""
+    """Return (config, warnings) for Noctalia's full effective config."""
     try:
         proc = subprocess.run(
             ["noctalia", "config", "export", "full", "--credentials", "omit"],
@@ -816,13 +1012,58 @@ def fetch_noctalia_full_config():
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or
                             f"Noctalia exited with status {proc.returncode}").strip())
-    try:
-        config = tomllib.loads(proc.stdout)
-    except Exception as exc:
-        raise RuntimeError(f"Noctalia returned invalid TOML config: {exc}")
+    config, warnings, error = parse_toml_lenient(proc.stdout)
+    if config is None:
+        raise RuntimeError(f"Noctalia returned invalid TOML config: {error}")
     if not isinstance(config, dict) or not config:
         raise RuntimeError("Noctalia returned an empty config.")
-    return config
+    return config, warnings
+
+
+CHOICE_RADIO_MAX = 5   # up to this many options -> radio buttons, else combobox
+
+# Used only when the current value is one of the listed options.
+KNOWN_CHOICES = {
+    "position": ["top", "bottom", "left", "right"],
+    "orientation": ["horizontal", "vertical"],
+    "align": ["left", "center", "right"],
+    "alignment": ["left", "center", "right"],
+    "title_align": ["left", "center", "right"],
+    "layer": ["top", "overlay", "auto"],
+}
+
+# The 28 palette roles from https://docs.noctalia.dev/noctalia/theming/palette/
+# (UI colour settings accept one of these or a fixed hex colour).
+NOCTALIA_COLOR_ROLES = [
+    "primary", "on_primary", "primary_container", "on_primary_container",
+    "secondary", "on_secondary", "secondary_container",
+    "on_secondary_container", "tertiary", "on_tertiary",
+    "tertiary_container", "on_tertiary_container", "error", "on_error",
+    "error_container", "on_error_container", "surface", "on_surface",
+    "on_surface_variant", "surface_container_low", "surface_container",
+    "surface_container_high", "surface_container_highest",
+    "outline_variant", "shadow", "scrim", "hover", "on_hover",
+]
+
+
+def _schema_value_choices(row):
+    vals = row.get("values")
+    if isinstance(vals, str) and vals.strip():
+        vals = re.split(r"[|,]", vals)
+    if not isinstance(vals, list):
+        return None
+    items = []
+    for v in vals:
+        if isinstance(v, dict):
+            v = v.get("value", v.get("name"))
+        if isinstance(v, str) and v.strip().strip("\"'"):
+            items.append(v.strip().strip("\"'"))
+    return items if len(items) >= 2 else None
+
+
+def _path_regex(path):
+    parts = re.split(r"<[^>]*>|\[\]", path)
+    return re.compile("^" + "[^.]+".join(re.escape(p) for p in parts) + "$")
 
 
 def flatten_schema(schema):
@@ -876,12 +1117,25 @@ class App:
         self.sources = {k: ConfigSource(k, v) for k, v in SOURCES.items()}
         for src in self.sources.values():
             src.load()
+        self.noctalia_parse_warnings = []
         try:
-            self.noctalia_full_config = fetch_noctalia_full_config()
+            (self.noctalia_full_config,
+             self.noctalia_parse_warnings) = fetch_noctalia_full_config()
             self.noctalia_full_config_error = None
         except RuntimeError as exc:
             self.noctalia_full_config = {}
             self.noctalia_full_config_error = str(exc)
+
+        # Accepted-value lists from the live Umbriel schema (for radios/combos)
+        self.schema_choice_rules = []
+        try:
+            for r in flatten_schema(fetch_umbriel_schema()):
+                ch = _schema_value_choices(r)
+                if ch:
+                    self.schema_choice_rules.append(
+                        (_path_regex(r["path"]), ch))
+        except Exception:
+            pass
 
         self.vars = {}
         self.var_meta = {}
@@ -1214,6 +1468,13 @@ class App:
             lines.append(
                 f"Built-in settings could not be loaded: "
                 f"{self.noctalia_full_config_error}")
+        if self.noctalia_parse_warnings:
+            lines.append(
+                "Some built-in settings could not be parsed and were skipped:")
+            lines.extend(f"  {w}" for w in self.noctalia_parse_warnings[:15])
+            if len(self.noctalia_parse_warnings) > 15:
+                lines.append(
+                    f"  … and {len(self.noctalia_parse_warnings) - 15} more")
         ttk.Label(info, text="\n".join(lines), justify="left",
                   anchor="w", wraplength=900).pack(fill="x")
 
@@ -1233,6 +1494,36 @@ class App:
     # ------------------------------------------------------------------
     # Widgets
     # ------------------------------------------------------------------
+    def _build_choice_widget(self, row, var, choices, include_current=True):
+        """Radio buttons for a few options, a read-only dropdown for many."""
+        choices = list(choices)
+        cur = var.get()
+        if include_current and cur and cur not in choices:
+            choices.append(cur)
+        if len(choices) <= CHOICE_RADIO_MAX:
+            for ch in choices:
+                ttk.Radiobutton(row, text=ch, variable=var,
+                                value=ch).pack(side="left", padx=2)
+        else:
+            width = min(40, max(12, max(len(c) for c in choices) + 2))
+            ttk.Combobox(row, textvariable=var, values=choices,
+                         state="readonly", width=width).pack(side="left")
+
+    def _choices_for(self, source_key, key, current):
+        """Known options for a string setting, or None for free text."""
+        if not isinstance(current, str) or _looks_like_hex_color(current):
+            return None
+        if source_key == "noctalia" and key == "bar.default.layer":
+            return ["top", "overlay"]
+        if source_key == "umbriel":
+            for rx, ch in self.schema_choice_rules:
+                if rx.match(key):
+                    return list(ch)
+        known = KNOWN_CHOICES.get(key.rsplit(".", 1)[-1])
+        if known and current in known:
+            return list(known)
+        return None
+
     def _create_schema_widget(self, parent, source_key, opt):
         key = opt["key"]
         label = opt["label"]
@@ -1251,6 +1542,12 @@ class App:
         row.pack(fill="x", pady=2)
         ttk.Label(row, text=label, width=32, anchor="w").pack(side="left")
 
+        choices = opt.get("choices")
+        if typ == "text" and isinstance(current, str):
+            live = self._choices_for(source_key, key, current)
+            if live:
+                typ, choices = "choice", live
+
         if typ == "boolean":
             var = tk.BooleanVar(value=bool(current))
             ttk.Checkbutton(row, variable=var).pack(side="left")
@@ -1259,36 +1556,27 @@ class App:
 
         elif typ == "choice":
             var = tk.StringVar(value=str(current) if current is not None else "")
-            for ch in opt["choices"]:
-                ttk.Radiobutton(row, text=ch, variable=var,
-                                value=ch).pack(side="left", padx=2)
+            self._build_choice_widget(row, var, choices)
             self.vars[full] = var
             self.var_meta[full] = {"kind": "choice"}
 
         elif typ == "slider":
             var = tk.DoubleVar(value=float(current) if current is not None else 0.0)
-            ttk.Scale(row, from_=opt["min"], to=opt["max"], variable=var,
-                      orient="horizontal", length=200).pack(
-                          side="left", fill="x", expand=True)
-            out = ttk.Label(row, textvariable=var, width=6)
-            out.pack(side="left")
-
-            def _fmt(*_a, v=var, l=out):
-                try:
-                    l.config(text=str(round(v.get(), 3)))
-                except tk.TclError:
-                    pass
-            var.trace_add("write", _fmt)
-            self.vars[full] = var
             integral_range = (
                 isinstance(opt["min"], int) and not isinstance(opt["min"], bool)
                 and isinstance(opt["max"], int) and not isinstance(opt["max"], bool)
                 and "resolution" not in opt
             )
+            number_type = opt.get(
+                "number_type", "int" if integral_range else "float")
+            step = opt.get("resolution", 1 if number_type == "int" else 0.1)
+            NumberInput(
+                row, var, opt["min"], opt["max"], step=step,
+                length=200).pack(side="left", fill="x", expand=True)
+            self.vars[full] = var
             self.var_meta[full] = {
                 "kind": "number",
-                "number_type": opt.get(
-                    "number_type", "int" if integral_range else "float"),
+                "number_type": number_type,
             }
 
         elif typ == "text":
@@ -1348,7 +1636,38 @@ class App:
         row.pack(fill="x", pady=2)
         ttk.Label(row, text=label or key, width=36, anchor="w").pack(side="left")
 
-        if kind == "boolean":
+        choices = self._choices_for(source_key, key, value) \
+            if kind == "text" else None
+        is_role = (source_key == "noctalia" and kind == "text"
+                   and value in NOCTALIA_COLOR_ROLES)
+
+        if is_role:
+            # Noctalia colour settings accept a palette role OR a hex colour.
+            var = tk.StringVar(value=value)
+            ttk.Combobox(row, textvariable=var, values=NOCTALIA_COLOR_ROLES,
+                         width=28).pack(side="left")
+
+            def _pick_hex(v=var):
+                c = colorchooser.askcolor()[1]
+                if c:
+                    v.set(c.upper())
+            ttk.Button(row, text="Hex…", command=_pick_hex).pack(
+                side="left", padx=4)
+            ttk.Label(row, text="palette role or #RRGGBB[AA]",
+                      foreground="#777").pack(side="left")
+            self.vars[full] = var
+            self.var_meta[full] = {"kind": "text"}
+
+        elif choices:
+            var = tk.StringVar(value=value)
+            self._build_choice_widget(
+                row, var, choices,
+                include_current=not (
+                    source_key == "noctalia" and key == "bar.default.layer"))
+            self.vars[full] = var
+            self.var_meta[full] = {"kind": "choice"}
+
+        elif kind == "boolean":
             var = tk.BooleanVar(value=bool(value))
             ttk.Checkbutton(row, variable=var).pack(side="left")
             self.vars[full] = var
@@ -1565,9 +1884,15 @@ class App:
             elif kind == "number":
                 nt = meta.get("number_type", "float")
                 try:
-                    value = int(round(float(raw))) if nt == "int" else float(raw)
-                except (TypeError, ValueError):
-                    continue
+                    numeric = float(raw)
+                    if nt == "int" and not numeric.is_integer():
+                        raise ValueError
+                    value = int(numeric) if nt == "int" else numeric
+                except (OverflowError, TypeError, ValueError) as exc:
+                    expected = "integer" if nt == "int" else "number"
+                    raise ValueError(
+                        f"{key} must be a valid {expected} value "
+                        f"(got {raw!r})") from exc
             elif kind == "boolean":
                 value = bool(raw)
             else:
@@ -1694,7 +2019,13 @@ class App:
             }
         try:
             cfg = self._collect_for_source(source_key)
-            text = src.prepare_text(cfg)
+            remove_keys = [
+                full.split(":", 1)[1]
+                for full, meta in self.var_meta.items()
+                if full.startswith(source_key + ":")
+                and meta.get("default_only")
+            ]
+            text = src.prepare_text(cfg, remove_keys)
         except Exception as exc:
             return {
                 "ok": False,
@@ -1722,7 +2053,7 @@ class App:
 
         try:
             text = result["text"]
-            src.commit(text)
+            self._commit(src, text)
             src.merged = tomllib.loads(text)
         except Exception as exc:
             messagebox.showerror(
@@ -1732,6 +2063,20 @@ class App:
 
         self._set_status(f"{src.name}: ✓ saved → {src.save_path}")
         return True
+
+    def _commit(self, src, text):
+        """Write ``text``; ask before overwriting a real external change."""
+        try:
+            src.commit(text)
+        except ExternalChange:
+            if not messagebox.askyesno(
+                    f"{src.name}: file changed on disk",
+                    f"{src.save_path}\n\nAnother program modified this file "
+                    "since it was loaded.\n\nOverwrite it with the values "
+                    "from this window? (A .bak copy is kept.)"):
+                raise RuntimeError("Save cancelled: file changed on disk.")
+            src.loaded_fingerprint = src._fingerprint()
+            src.commit(text)
 
     def _save_all(self):
         prepared = {
@@ -1761,7 +2106,7 @@ class App:
             src = self.sources[key]
             try:
                 text = result["text"]
-                src.commit(text)
+                self._commit(src, text)
                 src.merged = tomllib.loads(text)
             except Exception as exc:
                 messagebox.showerror(
