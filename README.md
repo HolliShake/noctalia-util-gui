@@ -48,14 +48,16 @@ range.
 - Select a theme source: `builtin`, `wallpaper`, `community`, or `custom`.
 - Choose from documented built-in palettes: Ayu, Catppuccin, Dracula, Eldritch,
   Gruvbox, Kanagawa, Noctalia, Nord, Rosé Pine, and Tokyo-Night.
-- Community and custom palette dropdowns discover local `*.json` palette files.
-  Their filenames become the selectable palette names, and a configured name
-  remains available even if its file is missing.
+- The community palette dropdown lists the names cataloged from the [official
+  Noctalia palette catalog](https://noctalia.dev/palettes), plus any additional
+  local `*.json` palette files. Custom palettes are discovered from local
+  `*.json` files. A configured name remains available even if its file is
+  missing.
 - `bar.default.layer` and `dock.layer` offer only `top` and `overlay`.
 
-The Noctalia CLI does not provide a palette-list command, so built-in palette
-choices use the documented list; community and custom choices are discovered
-from disk.
+The Noctalia CLI does not provide a palette-list command, so the built-in and
+community palette choices use the documented lists; custom palettes are
+discovered from disk.
 
 ### Umbriel schema explorer
 
@@ -130,10 +132,12 @@ must include Tkinter and virtual-environment support; install your
 distribution’s Tkinter package if the installer reports it missing. The first
 install needs access to PyPI to build the wheel and install CustomTkinter.
 The desktop entry uses an absolute PNG pixmap path for reliable menu display;
-the SVG is also installed in the hicolor icon theme. The app window uses the
-PNG icon and a dedicated ICO on Windows. The installer removes the previous
-user-local launcher and desktop entry for this app so they do not shadow the
-system installation. It does not modify other applications.
+the SVG is also installed in the hicolor icon theme. On Linux, the window
+class matches the desktop entry so panels and docks can associate the running
+window with its icon. The app window uses the PNG icon and a dedicated ICO on
+Windows. The installer removes the previous user-local launcher and desktop
+entry for this app so they do not shadow the system installation. It does not
+modify other applications.
 
 To run from a source checkout instead:
 

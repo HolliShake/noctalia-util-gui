@@ -1702,7 +1702,7 @@ def _set_window_icon(root: tk.Tk):
 def main():
     ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
-    root = ctk.CTk()
+    root = ctk.CTk(className="NoctaliaUtilGUI")
     _set_window_icon(root)
     apply_ttk_theme()
     App(root)

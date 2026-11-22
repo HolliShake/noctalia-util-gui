@@ -143,16 +143,22 @@ class ConfigSmokeTests(unittest.TestCase):
     def test_noctalia_choices_and_installed_palettes(self):
         palette_dir = Path(self.temp_dir.name, "community-palettes")
         palette_dir.mkdir()
-        (palette_dir / "Installed.json").touch()
+        (palette_dir / "Oxocarbon.json").touch()
+        (palette_dir / "Local-only.json").touch()
         with patch("config.NOCTALIA_COMMUNITY_PALETTE_DIR", str(palette_dir)):
+            choices = self.manager.choices_for(
+                "noctalia", "theme.community_palette", "Oxocarbon")
+            self.assertIn("ADW", choices)
+            self.assertIn("Atuel", choices)
+            self.assertIn("Oxocarbon", choices)
+            self.assertIn("Local-only", choices)
             self.assertEqual(
+                choices,
+                sorted(set(choices), key=str.casefold))
+            self.assertIn(
+                "Missing",
                 self.manager.choices_for(
-                    "noctalia", "theme.community_palette", "Installed"),
-                ["Installed"])
-            self.assertEqual(
-                self.manager.choices_for(
-                    "noctalia", "theme.community_palette", "Missing"),
-                ["Installed", "Missing"])
+                    "noctalia", "theme.community_palette", "Missing"))
         self.assertEqual(
             self.manager.choices_for("noctalia", "dock.layer", "auto"),
             ["top", "overlay"])

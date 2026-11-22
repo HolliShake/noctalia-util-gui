@@ -968,9 +968,53 @@ NOCTALIA_BUILTIN_PALETTES = [
     "Noctalia", "Nord", "Rosé Pine", "Tokyo-Night",
 ]
 
+# Community palettes listed by the official Noctalia palette catalog.
+NOCTALIA_COMMUNITY_PALETTES = [
+    "ADW", "ADW-green", "Alpenglow", "Atuel", "Aura",
+    "Ayu Blue", "Ayu Green", "Ayu Red", "Breeze", "Catppuccin Frappe Blue",
+    "Catppuccin Frappe Green", "Catppuccin Frappe Lavender",
+    "Catppuccin Frappe Mauve", "Catppuccin Frappe Peach",
+    "Catppuccin Frappe Pink", "Catppuccin Frappe Rosewater",
+    "Catppuccin Frappe Sapphire", "Catppuccin Macchiato Blue",
+    "Catppuccin Macchiato Green", "Catppuccin Macchiato Lavender",
+    "Catppuccin Macchiato Mauve", "Catppuccin Macchiato Peach",
+    "Catppuccin Macchiato Pink", "Catppuccin Macchiato Rosewater",
+    "Catppuccin Macchiato Sapphire", "Catppuccin Mocha Blue",
+    "Catppuccin Mocha Green", "Catppuccin Mocha Lavender",
+    "Catppuccin Mocha Maroon", "Catppuccin Mocha Mauve-Lavender",
+    "Catppuccin Mocha Peach", "Catppuccin Mocha Pink",
+    "Catppuccin Mocha Rosewater", "Catppuccin Mocha Sapphire",
+    "Cattppuccin Abyssal", "Cherry Blossom", "Chocolatada",
+    "Coral and Sea", "Cream", "Cream Autumn", "Cream Espresso",
+    "Creamy Forest", "Cyberpunk", "Doomed", "Everdeer", "Everforest",
+    "Everforest Alt", "Everforest Material", "Fen", "Flexoki", "Frutilla",
+    "Garnet", "GitHub Dark", "Gruber Darker", "Gruvbox Material",
+    "Gruvbox Material Hard", "Gruvbox Material Medium", "GruvboxAlt",
+    "Heartbox", "Hexa34C", "Horizon", "Inabakumori", "Jiva",
+    "Jiva Lotus", "Jiva Paper", "Kanagawa Dragon", "Kanagawa Kasumi",
+    "Kanagawa Paper", "Kemuri", "Kemuri Koke", "Kemuri Susu", "Kitten",
+    "Koneko", "Lilac AMOLED", "Macaron", "Matecito", "Miasma", "Mine",
+    "Mizuki-Akiyama", "Monochrome", "Murasaki", "Murata", "NaySayer",
+    "Neon Surf", "Noctalia legacy", "Nord Aurora", "Norman",
+    "Norman Muted", "Oasis Abyss", "Occult Umbral", "One", "One Dark Two",
+    "One Dark Warmer", "Osaka jade", "Oxide", "Oxocarbon", "Paradise",
+    "Peche", "Rose Pine Alt", "Rose Pine Moon", "Rose Pine Moon Alt",
+    "Rosey AMOLED", "SeaBed", "Seoul256", "Seoul256 Hard",
+    "Seoul256 Soft", "Shien", "Shinonome", "Solarized",
+    "Solarized Osaka", "Spiderman", "Sway Classic", "Tokyo Night Moon",
+    "Tokyo Night Storm", "Tomorrow", "Vesper", "WeebPunk", "Zenbones",
+]
+
+NOCTALIA_THEME_SOURCE_KEY = "theme.source"
+NOCTALIA_THEME_BUILTIN_KEY = "theme.builtin"
+NOCTALIA_THEME_COMMUNITY_PALETTE_KEY = "theme.community_palette"
+NOCTALIA_THEME_CUSTOM_PALETTE_KEY = "theme.custom_palette"
+
 NOCTALIA_THEME_CHOICE_KEYS = {
-    "theme.source", "theme.builtin", "theme.community_palette",
-    "theme.custom_palette",
+    NOCTALIA_THEME_SOURCE_KEY,
+    NOCTALIA_THEME_BUILTIN_KEY,
+    NOCTALIA_THEME_COMMUNITY_PALETTE_KEY,
+    NOCTALIA_THEME_CUSTOM_PALETTE_KEY,
 }
 
 NOCTALIA_RESTRICTED_LAYER_KEYS = {"bar.default.layer", "dock.layer"}
@@ -1143,16 +1187,22 @@ class ConfigManager:
                 and key in NOCTALIA_RESTRICTED_LAYER_KEYS):
             return ["top", "overlay"]
         if source_key == "noctalia":
-            if key == "theme.source":
+            if key == NOCTALIA_THEME_SOURCE_KEY:
                 return ["builtin", "wallpaper", "community", "custom"]
-            if key == "theme.builtin":
+            if key == NOCTALIA_THEME_BUILTIN_KEY:
                 return list(NOCTALIA_BUILTIN_PALETTES)
-            if key in ("theme.community_palette", "theme.custom_palette"):
+            if key in (
+                    NOCTALIA_THEME_COMMUNITY_PALETTE_KEY,
+                    NOCTALIA_THEME_CUSTOM_PALETTE_KEY):
                 directory = (
                     NOCTALIA_COMMUNITY_PALETTE_DIR
-                    if key == "theme.community_palette"
+                    if key == NOCTALIA_THEME_COMMUNITY_PALETTE_KEY
                     else NOCTALIA_CUSTOM_PALETTE_DIR)
                 choices = _installed_palette_names(directory)
+                if key == NOCTALIA_THEME_COMMUNITY_PALETTE_KEY:
+                    choices = sorted(
+                        set(choices) | set(NOCTALIA_COMMUNITY_PALETTES),
+                        key=str.casefold)
                 if current and current not in choices:
                     choices.append(current)
                 return choices

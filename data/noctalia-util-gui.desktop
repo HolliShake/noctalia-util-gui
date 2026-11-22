@@ -6,5 +6,6 @@ Comment=Edit Noctalia Shell and Umbriel configuration
 Exec=/usr/local/bin/noctalia-util-gui
 TryExec=/usr/local/bin/noctalia-util-gui
 Icon=/usr/local/share/pixmaps/noctalia-util-gui.png
+StartupWMClass=NoctaliaUtilGUI
 Terminal=false
 Categories=System;

@@ -6,6 +6,21 @@ import main
 
 
 class WindowIconTests(unittest.TestCase):
+    def test_linux_window_uses_desktop_entry_identity(self):
+        root = Mock()
+        with (
+                patch("main.sys.platform", "linux"),
+                patch("main.ctk.set_appearance_mode"),
+                patch("main.ctk.set_default_color_theme"),
+                patch("main.ctk.CTk", return_value=root) as create_root,
+                patch("main._set_window_icon"),
+                patch("main.apply_ttk_theme"),
+                patch("main.App"),
+                ):
+            main.main()
+
+        create_root.assert_called_once_with(className="NoctaliaUtilGUI")
+
     def test_windows_uses_png_and_ico_window_icons(self):
         root = Mock()
         icon_dir = Path(main.__file__).resolve().parent / "data"
