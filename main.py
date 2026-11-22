@@ -171,6 +171,9 @@ NOCTALIA_CONFIG_DIR = os.path.join(
 NOCTALIA_STATE_DIR = os.path.join(
     os.path.expanduser(os.environ.get("NOCTALIA_STATE_HOME", XDG_STATE_HOME)),
     "noctalia")
+NOCTALIA_COMMUNITY_PALETTE_DIR = os.path.join(
+    NOCTALIA_STATE_DIR, "community-palettes")
+NOCTALIA_CUSTOM_PALETTE_DIR = os.path.join(NOCTALIA_CONFIG_DIR, "palettes")
 UMBRIEL_CONFIG_DIR = os.path.join(XDG_CONFIG_HOME, "umbriel")
 
 SOURCES = {
@@ -488,7 +491,7 @@ UMBRIEL_SCHEMA = {
             {"key": "animation.workspaces.curve", "label": "Workspaces Curve",
              "type": "text", "default": "easeout"},
             {"key": "animation.dialogs.dim", "label": "Dialog Dim",
-             "type": "slider", "min": 0.0, "max": 1.0,
+             "type": "slider", "min": 0.1, "max": 1.0,
              "default": 0.3, "resolution": 0.05},
         ],
         "Umbriel · Window Rules (raw TOML)": [
@@ -552,6 +555,18 @@ def infer_kind(value):
     if isinstance(value, dict):
         return "table"
     return "text"
+
+
+def _is_opacity_value(key):
+    parts = key.casefold().split(".")
+    return (
+        any("opacity" in part for part in parts)
+        and not any(
+            part in {"enabled", "curve"}
+            or "duration" in part
+            or part.endswith("_ms")
+            for part in parts)
+    )
 
 
 def _looks_like_hex_color(s):
@@ -1136,6 +1151,27 @@ KNOWN_CHOICES = {
     "title_align": ["left", "center", "right"],
     "layer": ["top", "overlay", "auto"],
 }
+
+# Noctalia exposes no CLI command for this list; these are its documented
+# bundled palettes. Community and custom palettes are discovered from disk.
+NOCTALIA_BUILTIN_PALETTES = [
+    "Ayu", "Catppuccin", "Dracula", "Eldritch", "Gruvbox", "Kanagawa",
+    "Noctalia", "Nord", "Rosé Pine", "Tokyo-Night",
+]
+NOCTALIA_THEME_CHOICE_KEYS = {
+    "theme.source", "theme.builtin", "theme.community_palette",
+    "theme.custom_palette",
+}
+
+
+def _installed_palette_names(directory):
+    names = {
+        os.path.splitext(os.path.basename(path))[0]
+        for path in glob.glob(os.path.join(directory, "*.json"))
+        if os.path.isfile(path)
+    }
+    return sorted(names, key=str.casefold)
+
 
 # The 28 palette roles from https://docs.noctalia.dev/noctalia/theming/palette/
 # (UI colour settings accept one of these or a fixed hex colour).
@@ -1911,13 +1947,16 @@ class App:
     # ------------------------------------------------------------------
     # Widgets
     # ------------------------------------------------------------------
-    def _build_choice_widget(self, ctrl, var, choices, include_current=True):
+    def _build_choice_widget(
+            self, ctrl, var, choices, include_current=True,
+            force_dropdown=False):
         """Segmented control for a few short options, dropdown otherwise."""
         choices = list(choices)
         cur = var.get()
         if include_current and cur and cur not in choices:
             choices.append(cur)
-        compact = (len(choices) <= CHOICE_RADIO_MAX
+        compact = (not force_dropdown
+                   and len(choices) <= CHOICE_RADIO_MAX
                    and sum(len(c) for c in choices) <= 44)
         if compact:
             seg = ctk.CTkSegmentedButton(
@@ -1938,6 +1977,20 @@ class App:
             return None
         if source_key == "noctalia" and key == "bar.default.layer":
             return ["top", "overlay"]
+        if source_key == "noctalia":
+            if key == "theme.source":
+                return ["builtin", "wallpaper", "community", "custom"]
+            if key == "theme.builtin":
+                return list(NOCTALIA_BUILTIN_PALETTES)
+            if key in ("theme.community_palette", "theme.custom_palette"):
+                directory = (
+                    NOCTALIA_COMMUNITY_PALETTE_DIR
+                    if key == "theme.community_palette"
+                    else NOCTALIA_CUSTOM_PALETTE_DIR)
+                choices = _installed_palette_names(directory)
+                if current and current not in choices:
+                    choices.append(current)
+                return choices
         if source_key == "umbriel":
             for rx, ch in self.schema_choice_rules:
                 if rx.match(key):
@@ -2111,7 +2164,10 @@ class App:
             self._build_choice_widget(
                 ctrl, var, choices,
                 include_current=not (
-                    source_key == "noctalia" and key == "bar.default.layer"))
+                    source_key == "noctalia" and key == "bar.default.layer"),
+                force_dropdown=(
+                    source_key == "noctalia"
+                    and key in NOCTALIA_THEME_CHOICE_KEYS))
             meta = {"kind": "choice"}
             self._register(full, var, meta)
 
@@ -2119,6 +2175,14 @@ class App:
             var = tk.BooleanVar(value=bool(value))
             self._switch(ctrl, var)
             meta = {"kind": "boolean"}
+            self._register(full, var, meta)
+
+        elif kind in ("int", "float") and _is_opacity_value(key):
+            var = tk.DoubleVar(value=float(value))
+            NumberInput(
+                ctrl, var, 0.1, 1.0, step=0.1, length=200).pack(
+                    side="left", fill="x", expand=True)
+            meta = {"kind": "number", "number_type": "float"}
             self._register(full, var, meta)
 
         elif kind in ("int", "float"):
