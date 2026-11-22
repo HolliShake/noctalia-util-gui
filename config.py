@@ -1,0 +1,1432 @@
+"""Configuration loading, schema, serialization, validation, and persistence.
+
+Requires Python 3.11+ for the standard-library ``tomllib`` module.
+"""
+
+import copy
+import datetime
+import glob
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import shutil
+import stat
+import subprocess
+import tempfile
+import tomllib
+
+HOME = os.path.expanduser("~")
+
+XDG_CONFIG_HOME = os.path.expanduser(
+    os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")))
+
+XDG_STATE_HOME = os.path.expanduser(
+    os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local", "state")))
+
+NOCTALIA_CONFIG_DIR = os.path.join(
+    os.path.expanduser(os.environ.get("NOCTALIA_CONFIG_HOME", XDG_CONFIG_HOME)),
+    "noctalia")
+
+NOCTALIA_STATE_DIR = os.path.join(
+    os.path.expanduser(os.environ.get("NOCTALIA_STATE_HOME", XDG_STATE_HOME)),
+    "noctalia")
+
+NOCTALIA_COMMUNITY_PALETTE_DIR = os.path.join(
+    NOCTALIA_STATE_DIR, "community-palettes")
+
+NOCTALIA_CUSTOM_PALETTE_DIR = os.path.join(NOCTALIA_CONFIG_DIR, "palettes")
+
+UMBRIEL_CONFIG_DIR = os.path.join(XDG_CONFIG_HOME, "umbriel")
+
+SOURCES = {
+    "umbriel": {
+        "name": "Umbriel",
+        "load_globs": [],
+        "load_paths": [os.path.join(UMBRIEL_CONFIG_DIR, "config.toml")],
+        "save_path": os.path.join(UMBRIEL_CONFIG_DIR, "config.toml"),
+    },
+    "noctalia": {
+        "name": "Noctalia",
+        "load_globs": [os.path.join(NOCTALIA_CONFIG_DIR, "*.toml")],
+        "load_paths": [os.path.join(NOCTALIA_STATE_DIR, "settings.toml")],
+        "save_path": os.path.join(NOCTALIA_STATE_DIR, "settings.toml"),
+    },
+}
+
+CATEGORY_SOURCES = {
+    "Compositor (Umbriel)": ["umbriel"],
+    "Configuration":        ["noctalia"],
+    "Bar":                  ["umbriel", "noctalia"],
+    "Dock":                 ["noctalia"],
+    "Launcher":             ["noctalia"],
+    "Theming":              ["umbriel", "noctalia"],
+    "Desktop":              ["umbriel", "noctalia"],
+    "Services":             ["noctalia"],
+    "KeyBinding":           ["umbriel", "noctalia"],
+    "More":                 ["umbriel", "noctalia"],
+}
+
+REPLACE_KEYS = {"keybinds", "window_rule", "layer_rule"}
+
+DEFAULT_ANIMATION_CURVE = "easeout"
+
+KEY_PREFIX_TO_CATEGORY = {
+    "general": "Compositor (Umbriel)",
+    "include": "Compositor (Umbriel)",
+    "events": "Compositor (Umbriel)",
+    "screencast": "Compositor (Umbriel)",
+    "input": "Compositor (Umbriel)",
+    "appearance.blur": "Theming",
+    "appearance.title_bar": "Theming",
+    "appearance.tab_bar": "Bar",
+    "colors": "Theming",
+    "layout": "More",
+    "animation": "More",
+    "effects": "More",
+    "window_rule": "More",
+    "layer_rule": "More",
+    "hot_corners": "Desktop",
+    "keybinds": "KeyBinding",
+    "scratchpad": "More",
+    "theme": "Theming",
+    "wallpaper": "Desktop",
+    "bar": "Bar",
+    "dock": "Dock",
+    "launcher": "Launcher",
+    "shell.launcher": "Launcher",
+    "shell.bar": "Bar",
+    "shell.dock": "Dock",
+    "audio": "Services",
+    "bluetooth": "Services",
+    "brightness": "Services",
+    "calendar": "Services",
+    "night_light": "Services",
+    "nightlight": "Services",
+    "idle": "Services",
+    "weather": "Services",
+    "battery": "Services",
+    "notification": "Services",
+    "accessibility": "More",
+    "shell": "More",
+    "config": "Configuration",
+}
+
+UMBRIEL_SCHEMA = {
+    "Compositor (Umbriel)": {
+        "Includes": [
+            {"key": "include.files", "label": "Include Files",
+             "type": "list", "item_type": "str", "default": []},
+            {"key": "include.optional.files", "label": "Optional Include Files",
+             "type": "list", "item_type": "str", "default": []},
+        ],
+        "General": [
+            {"key": "general.autostart", "label": "Autostart Commands",
+             "type": "list", "item_type": "str", "default": []},
+            {"key": "general.xwayland", "label": "Enable XWayland",
+             "type": "boolean", "default": True},
+            {"key": "general.xwayland_native_resolution",
+             "label": "XWayland Native Resolution",
+             "type": "boolean", "default": False},
+            {"key": "general.xwayland_xsettings",
+             "label": "XWayland XSettings", "type": "boolean", "default": True},
+            {"key": "general.xwayland_primary_output",
+             "label": "XWayland Primary Output", "type": "text", "default": ""},
+            {"key": "general.nvidia_sync_workaround",
+             "label": "NVIDIA Sync Workaround",
+             "type": "boolean", "default": True},
+            {"key": "general.attach_modal_dialogs",
+             "label": "Attach Modal Dialogs",
+             "type": "boolean", "default": True},
+        ],
+        "Events": [
+            {"key": "events.lid_close", "label": "Lid Close Command",
+             "type": "text", "default": ""},
+            {"key": "events.lid_open", "label": "Lid Open Command",
+             "type": "text", "default": ""},
+        ],
+        "Screencast": [
+            {"key": "screencast.disable_dynamic_confirmation",
+             "label": "Disable Dynamic Confirmation",
+             "type": "boolean", "default": False},
+        ],
+        "Input": [
+            {"key": "input.keyboard.numlock_toggle",
+             "label": "NumLock Toggle", "type": "boolean", "default": True},
+            {"key": "input.focus.follows_mouse", "label": "Focus Follows Mouse",
+             "type": "choice", "choices": ["off", "sloppy", "always"],
+             "default": "off"},
+            {"key": "input.focus.hover_raises", "label": "Hover Raises",
+             "type": "boolean", "default": False},
+            {"key": "input.touch.enabled", "label": "Touch Enabled",
+             "type": "boolean", "default": False},
+            {"key": "input.touch.map_to_output", "label": "Touch Map to Output",
+             "type": "text", "default": ""},
+        ],
+    },
+    "Bar": {
+        "Umbriel · Tab Bar Appearance": [
+            {"key": "appearance.tab_bar.style", "label": "Style",
+             "type": "choice", "choices": ["titles", "indicator"],
+             "default": "titles"},
+            {"key": "appearance.tab_bar.height", "label": "Height (px)",
+             "type": "slider", "min": 16, "max": 64, "default": 24},
+            {"key": "appearance.tab_bar.gap", "label": "Gap (-1=layout.gap)",
+             "type": "slider", "min": -1, "max": 32, "default": -1},
+            {"key": "appearance.tab_bar.font", "label": "Font",
+             "type": "text", "default": "sans 10"},
+            {"key": "appearance.tab_bar.visible", "label": "Visible",
+             "type": "boolean", "default": True},
+            {"key": "appearance.tab_bar.hide_when_single",
+             "label": "Hide When Single", "type": "boolean", "default": False},
+            {"key": "appearance.tab_bar.max_tabs", "label": "Max Tabs",
+             "type": "slider", "min": 1, "max": 32, "default": 6},
+            {"key": "appearance.tab_bar.overflow", "label": "Overflow",
+             "type": "choice", "choices": ["scroll", "shrink"],
+             "default": "scroll"},
+        ],
+        "Umbriel · Tabs Behaviour": [
+            {"key": "layout.tabs.default_display", "label": "Default Display",
+             "type": "text", "default": "normal"},
+            {"key": "layout.tabs.new_tab_position", "label": "New Tab Position",
+             "type": "text", "default": "after_active"},
+            {"key": "layout.tabs.middle_click_closes",
+             "label": "Middle Click Closes", "type": "boolean", "default": True},
+        ],
+    },
+    "Theming": {
+        "Umbriel · Blur": [
+            {"key": "appearance.blur.enabled", "label": "Enable Blur",
+             "type": "boolean", "default": True},
+            {"key": "appearance.blur.optimized", "label": "Optimized Blur",
+             "type": "boolean", "default": True},
+            {"key": "appearance.blur.passes", "label": "Blur Passes",
+             "type": "slider", "min": 0, "max": 8, "default": 2},
+            {"key": "appearance.blur.radius", "label": "Blur Radius",
+             "type": "slider", "min": 0, "max": 100, "default": 5},
+            {"key": "appearance.blur.noise", "label": "Blur Noise",
+             "type": "slider", "min": 0.0, "max": 1.0, "default": 0.02},
+            {"key": "appearance.blur.brightness", "label": "Blur Brightness",
+             "type": "slider", "min": 0.0, "max": 2.0, "default": 0.9},
+            {"key": "appearance.blur.contrast", "label": "Blur Contrast",
+             "type": "slider", "min": 0.0, "max": 2.0, "default": 0.9},
+            {"key": "appearance.blur.saturation", "label": "Blur Saturation",
+             "type": "slider", "min": 0.0, "max": 2.0, "default": 1.1},
+        ],
+        "Umbriel · Window Appearance": [
+            {"key": "appearance.prefer_no_csd",
+             "label": "Prefer server-side decorations",
+             "type": "boolean", "default": True},
+            {"key": "appearance.border_width", "label": "Border Width",
+             "type": "slider", "min": 0, "max": 100, "default": 2},
+            {"key": "appearance.corner_radius", "label": "Corner Radius",
+             "type": "slider", "min": 0, "max": 100, "default": 10},
+        ],
+        "Umbriel · Title Bar": [
+            {"key": "appearance.title_bar.mode", "label": "Mode",
+             "type": "choice",
+             "choices": ["on", "negotiated", "forced", "off"],
+             "default": "off"},
+            {"key": "appearance.title_bar.height", "label": "Height (px)",
+             "type": "slider", "min": 16, "max": 64, "default": 28},
+            {"key": "appearance.title_bar.font", "label": "Font",
+             "type": "text", "default": "sans 10"},
+            {"key": "appearance.title_bar.title_align", "label": "Title Align",
+             "type": "choice", "choices": ["left", "center", "right"],
+             "default": "left"},
+            {"key": "appearance.title_bar.button_position",
+             "label": "Button Position",
+             "type": "choice", "choices": ["left", "right"], "default": "right"},
+            {"key": "appearance.title_bar.buttons", "label": "Buttons",
+             "type": "list", "item_type": "str",
+             "default": ["minimize", "maximize", "close"]},
+            {"key": "appearance.title_bar.button_size",
+             "label": "Button Size", "type": "slider",
+             "min": -1, "max": 64, "default": -1},
+            {"key": "appearance.title_bar.button_gap",
+             "label": "Button Gap (px)", "type": "slider",
+             "min": 0, "max": 32, "default": 8},
+            {"key": "appearance.title_bar.button_padding",
+             "label": "Button Padding", "type": "slider",
+             "min": -1, "max": 32, "default": -1},
+            {"key": "appearance.title_bar.button_corner_radius",
+             "label": "Button Corner Radius", "type": "slider",
+             "min": -1, "max": 32, "default": -1},
+            {"key": "appearance.title_bar.button_glyph",
+             "label": "Button Glyph", "type": "choice",
+             "choices": ["always", "hover", "never"], "default": "hover"},
+            {"key": "appearance.title_bar.button_glyph_size",
+             "label": "Glyph Size", "type": "slider",
+             "min": -1, "max": 128, "default": -1},
+            {"key": "appearance.title_bar.button_glyph_stroke",
+             "label": "Glyph Stroke", "type": "slider",
+             "min": -1, "max": 16, "default": -1},
+            {"key": "appearance.title_bar.button_background",
+             "label": "Button Background", "type": "boolean", "default": True},
+        ],
+        "Umbriel · Title Bar Colours": [
+            {"key": "colors.backdrop", "label": "Lock-screen Backdrop",
+             "type": "color", "default": "#000000FF"},
+            {"key": "colors.title_bar.close", "label": "Close Button",
+             "type": "color", "default": "#FF6B6BFF"},
+            {"key": "colors.title_bar.close_glyph", "label": "Close Glyph",
+             "type": "color", "default": "#141419FF"},
+            {"key": "colors.title_bar.close_glyph_hover",
+             "label": "Close Glyph Hover",
+             "type": "color", "default": "#141419FF"},
+            {"key": "colors.title_bar.maximize", "label": "Maximize Button",
+             "type": "color", "default": "#7AA3FFFF"},
+            {"key": "colors.title_bar.maximize_glyph", "label": "Maximize Glyph",
+             "type": "color", "default": "#141419FF"},
+            {"key": "colors.title_bar.maximize_glyph_hover",
+             "label": "Maximize Glyph Hover",
+             "type": "color", "default": "#141419FF"},
+            {"key": "colors.title_bar.minimize", "label": "Minimize Button",
+             "type": "color", "default": "#FFD166FF"},
+            {"key": "colors.title_bar.minimize_glyph", "label": "Minimize Glyph",
+             "type": "color", "default": "#141419FF"},
+            {"key": "colors.title_bar.minimize_glyph_hover",
+             "label": "Minimize Glyph Hover",
+             "type": "color", "default": "#141419FF"},
+        ],
+    },
+    "Desktop": {
+        "Umbriel · Hot Corner (Top-Left)": [
+            {"key": "hot_corners.top_left.enabled", "label": "Enabled",
+             "type": "boolean", "default": True},
+            {"key": "hot_corners.top_left.delay_ms", "label": "Delay (ms)",
+             "type": "slider", "min": 0, "max": 2000, "default": 500},
+            {"key": "hot_corners.top_left.action", "label": "Action",
+             "type": "text", "default": "overview-open"},
+        ],
+    },
+    "KeyBinding": None,
+    "More": {
+        "Umbriel · Layout": [
+            {"key": "layout.mode", "label": "Mode", "type": "choice",
+             "choices": ["scrolling", "dwindle", "master", "stacking"],
+             "default": "scrolling"},
+            {"key": "layout.extent_presets", "label": "Extent Presets",
+             "type": "list", "item_type": "float",
+             "default": [0.333, 0.5, 0.667]},
+            {"key": "layout.client_maximize", "label": "Client Maximize",
+             "type": "choice", "choices": ["column", "edges"],
+             "default": "column"},
+            {"key": "layout.scrolling.default_extent_fraction",
+             "label": "Default Extent Fraction",
+             "type": "slider", "min": 0.1, "max": 1.0,
+             "default": 0.5, "resolution": 0.05},
+            {"key": "layout.scrolling.center_on_overview_select",
+             "label": "Center on Overview Select",
+             "type": "boolean", "default": False},
+            {"key": "layout.stacking.drop_zones", "label": "Stacking Drop Zones",
+             "type": "boolean", "default": True},
+        ],
+        "Umbriel · Effects": [
+            {"key": "effects.border", "label": "Border Effect Name",
+             "type": "text", "default": ""},
+            {"key": "effects.border_unfocused", "label": "Border on Unfocused",
+             "type": "boolean", "default": False},
+        ],
+        "Umbriel · Animation": [
+            {"key": "animation.windows_opacity.enabled",
+             "label": "Window Opacity Anim", "type": "boolean", "default": True},
+            {"key": "animation.windows_opacity.curve", "label": "Opacity Curve",
+             "type": "text", "default": DEFAULT_ANIMATION_CURVE},
+            {"key": "animation.windows_opacity.duration_ms",
+             "label": "Opacity Duration (ms)", "type": "slider",
+             "min": 0, "max": 2000, "default": 250},
+            {"key": "animation.windows_resize.enabled",
+             "label": "Window Resize Anim", "type": "boolean", "default": False},
+            {"key": "animation.windows_resize.wait_for_redraw",
+             "label": "Wait for Redraw", "type": "boolean", "default": True},
+            {"key": "animation.workspaces.style", "label": "Workspaces Style",
+             "type": "choice", "choices": ["slide", "reveal"],
+             "default": "slide"},
+            {"key": "animation.workspaces.effect", "label": "Workspaces Effect",
+             "type": "text", "default": ""},
+            {"key": "animation.workspaces.duration_ms",
+             "label": "Workspaces Duration (ms)", "type": "slider",
+             "min": 0, "max": 2000, "default": 300},
+            {"key": "animation.workspaces.curve", "label": "Workspaces Curve",
+             "type": "text", "default": "easeout"},
+            {"key": "animation.dialogs.dim", "label": "Dialog Dim",
+             "type": "slider", "min": 0.1, "max": 1.0,
+             "default": 0.3, "resolution": 0.05},
+        ],
+        "Umbriel · Window Rules (raw TOML)": [
+            {"key": "window_rule", "label": "[[window_rule]] blocks",
+             "type": "raw_aot", "default": []},
+        ],
+        "Umbriel · Layer Rules (raw TOML)": [
+            {"key": "layer_rule", "label": "[[layer_rule]] blocks",
+             "type": "raw_aot", "default": []},
+        ],
+    },
+}
+
+def deep_merge(base, overlay, replace_keys=frozenset()):
+    for k, v in overlay.items():
+        if k in replace_keys:
+            base[k] = v
+        elif isinstance(v, dict) and isinstance(base.get(k), dict):
+            deep_merge(base[k], v, replace_keys)
+        else:
+            base[k] = v
+    return base
+
+def iter_leaf_entries(cfg, prefix=""):
+    for k, v in cfg.items():
+        full = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            yield from iter_leaf_entries(v, full)
+        else:
+            yield full, v
+
+def categorize_key(source_name, key):
+    if source_name == "noctalia" and (
+            key == "include" or key.startswith("include.")):
+        return "Configuration"
+    for prefix, cat in KEY_PREFIX_TO_CATEGORY.items():
+        if key == prefix or key.startswith(prefix + "."):
+            return cat
+    return "More"
+
+def infer_kind(value):
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "color" if _looks_like_hex_color(value) else "text"
+    if isinstance(value, list):
+        if value and all(isinstance(x, dict) for x in value):
+            return "aot"
+        return "list"
+    if isinstance(value, dict):
+        return "table"
+    return "text"
+
+def is_opacity_value(key):
+    parts = key.casefold().split(".")
+    return (
+        any("opacity" in part for part in parts)
+        and not any(
+            part in {"enabled", "curve"}
+            or "duration" in part
+            or part.endswith("_ms")
+            for part in parts)
+    )
+
+def _looks_like_hex_color(s):
+    if not s.startswith("#"):
+        return False
+    body = s[1:]
+    return len(body) in (6, 8) and all(c in "0123456789abcdefABCDEF" for c in body)
+
+def _get_dotted(cfg, key):
+    cur = cfg
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+def _set_dotted(cfg, key, value):
+    parts = key.split(".")
+    d = cfg
+    for p in parts[:-1]:
+        d = d.setdefault(p, {})
+        if not isinstance(d, dict):
+            return
+    d[parts[-1]] = value
+
+def _delete_dotted(cfg, key):
+    parts = key.split(".")
+    parents = []
+    current = cfg
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            return
+        parents.append((current, part))
+        current = current[part]
+    if not isinstance(current, dict) or parts[-1] not in current:
+        return
+    del current[parts[-1]]
+    for parent, part in reversed(parents):
+        child = parent[part]
+        if not isinstance(child, dict) or child:
+            break
+        del parent[part]
+
+def _parse_kb_options(text):
+    opts = {}
+    for part in text.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if v.lower() == "true":
+            opts[k] = True
+        elif v.lower() == "false":
+            opts[k] = False
+        elif v.startswith('"') and v.endswith('"'):
+            opts[k] = v[1:-1]
+        else:
+            try:
+                opts[k] = int(v)
+            except ValueError:
+                try:
+                    opts[k] = float(v)
+                except ValueError:
+                    opts[k] = v
+    return opts
+
+def toml_key(k):
+    if k and all(c.isalnum() or c in "-_" for c in k):
+        return k
+    return '"' + k.replace('"', '\\"') + '"'
+
+def toml_value(v):
+    """Serialize Python TOML values without losing whitespace/control chars."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        # JSON basic-string escaping is compatible with TOML basic strings.
+        return json.dumps(v, ensure_ascii=False)
+    if isinstance(v, datetime.datetime):
+        return v.isoformat()
+    if isinstance(v, (datetime.date, datetime.time)):
+        return v.isoformat()
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "nan"
+        if math.isinf(v):
+            return "inf" if v > 0 else "-inf"
+        return repr(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(toml_value(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return toml_inline_table(v)
+    raise TypeError(f"Unsupported TOML value: {type(v).__name__}")
+
+def toml_inline_table(d):
+    parts = [f"{toml_key(k)} = {toml_value(v)}" for k, v in d.items()]
+    return "{ " + ", ".join(parts) + " }"
+
+def _toml_table_path(parts):
+    return ".".join(toml_key(str(p)) for p in parts)
+
+def _write_toml_body(f, obj, prefix=(), in_aot=False):
+    """Write TOML tables/AoT recursively, preserving insertion order."""
+    if not isinstance(obj, dict):
+        return
+    scalar, tables, aots = [], [], []
+    for k, v in obj.items():
+        if isinstance(v, dict):
+            # keybinds values are compositor-specific inline option tables.
+            if prefix == ("keybinds",) or in_aot:
+                scalar.append((k, v))
+            else:
+                tables.append((k, v))
+        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            aots.append((k, v))
+        else:
+            scalar.append((k, v))
+
+    for k, v in scalar:
+        f.write(f"{toml_key(str(k))} = {toml_value(v)}\n")
+
+    for k, arr in aots:
+        section = prefix + (str(k),)
+        for item in arr:
+            f.write(f"\n[[{_toml_table_path(section)}]]\n")
+            _write_toml_body(f, item, section, in_aot=True)
+
+    for k, sub in tables:
+        section = prefix + (str(k),)
+        f.write(f"\n[{_toml_table_path(section)}]\n")
+        _write_toml_body(f, sub, section)
+
+def to_toml_string(obj):
+    buf = io.StringIO()
+    buf.write("# Written by Noctalia/Umbriel config GUI\n\n")
+    _write_toml_body(buf, obj)
+    return buf.getvalue()
+
+def serialize_aot(key, items):
+    """Serialize an array of tables using the same safe TOML writer."""
+    buf = io.StringIO()
+    section = tuple(key.split("."))
+    for item in items:
+        buf.write(f"[[{_toml_table_path(section)}]]\n")
+        _write_toml_body(buf, item, section, in_aot=True)
+        buf.write("\n")
+    return buf.getvalue()
+
+def run_official_validator(source_key, temp_file):
+    """Validate a temp file with the real ``umbriel`` / ``noctalia`` binary.
+
+    Returns dict:
+      installed  - False if the binary isn't on PATH
+      ok         - True if validation found no errors (warnings are allowed)
+      diagnostics- list of dicts (severity/message/file/line/column)
+      raw        - combined stdout/stderr (for display)
+    """
+    if source_key == "umbriel":
+        # -c must follow `config validate`; a leading -c launches the compositor.
+        cmd = ["umbriel", "config", "validate", "-c", temp_file, "--json"]
+    else:
+        cmd = ["noctalia", "config", "validate", temp_file]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        return {"installed": False, "ok": False, "diagnostics": [],
+                "raw": f"{cmd[0]} not found on PATH"}
+    except subprocess.TimeoutExpired:
+        return {"installed": True, "ok": False, "diagnostics": [],
+                "raw": "validator timed out after 30s"}
+
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    combined = (out + ("\n" + err if err else "")).strip()
+    diagnostics = []
+
+    if source_key == "umbriel":
+        # Prefer JSON (documented for both binary versions)
+        try:
+            payload = json.loads(out) if out else {}
+            diagnostics = payload.get("diagnostics", []) or []
+            # Umbriel reports valid=false and exits 1 even for warnings only.
+            has_error = any(str(d.get("severity", "")).lower() == "error"
+                            for d in diagnostics)
+            if diagnostics:
+                valid = not has_error
+            else:
+                valid = bool(payload.get("valid", proc.returncode == 0)) \
+                    and proc.returncode == 0
+            return {"installed": True,
+                    "ok": valid,
+                    "diagnostics": diagnostics, "raw": combined}
+        except json.JSONDecodeError:
+            pass  # fall through to text parsing
+
+    # Text mode (Noctalia, or old Umbriel without --json)
+    for line in combined.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        up = line.upper()
+        if up.startswith("ERROR"):
+            diagnostics.append({"severity": "error", "message": line})
+        elif up.startswith("WARN"):
+            diagnostics.append({"severity": "warning", "message": line})
+
+    return {"installed": True,
+            "ok": proc.returncode == 0,
+            "diagnostics": diagnostics,
+            "raw": combined}
+
+def format_diagnostics(diags, raw):
+    if not diags:
+        return raw or "(no diagnostics reported)"
+    lines = []
+    for d in diags:
+        sev = (d.get("severity") or "?").upper()
+        loc = ""
+        f = d.get("file")
+        if f:
+            loc = (f"{f}:{d.get('line', '?')}:"
+                   f"{d.get('column', '?')}: ")
+        lines.append(f"[{sev}] {loc}{d.get('message', '')}")
+    return "\n".join(lines)
+
+class ExternalChange(RuntimeError):
+    """The target file was modified by another program since it was loaded."""
+
+class ConfigSource:
+    loaded_data = None
+
+    def __init__(self, key, spec):
+        self.key = key
+        self.name = spec["name"]
+        self.load_globs = spec.get("load_globs", [])
+        self.load_paths = spec.get("load_paths", [])
+        self.save_path = spec["save_path"]
+        self.merged = {}
+        self.per_file = {}
+        self.load_errors = []
+        self.loaded_fingerprint = self._fingerprint()
+
+    def _fingerprint(self):
+        try:
+            with open(self.save_path, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except FileNotFoundError:
+            return None
+
+    def resolve_load_paths(self):
+        paths = []
+        for pattern in self.load_globs:
+            paths.extend(sorted(glob.glob(pattern)))
+        for path in self.load_paths:
+            if path not in paths:
+                paths.append(path)
+        return paths
+
+    def load(self):
+        self.merged, self.per_file, self.load_errors = {}, {}, []
+        for path in self.resolve_load_paths():
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "rb") as f:
+                    data = tomllib.load(f)
+                self.per_file[path] = data
+                deep_merge(self.merged, data)
+            except Exception as exc:
+                self.load_errors.append(f"{path}: {exc}")
+        self.loaded_fingerprint = self._fingerprint()
+        try:
+            self.loaded_data = self.read_disk()
+        except RuntimeError:
+            self.loaded_data = None
+        return self.merged
+
+    def read_disk(self):
+        if not os.path.exists(self.save_path):
+            return {}
+        try:
+            with open(self.save_path, "rb") as f:
+                return tomllib.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Could not parse {self.save_path}: {exc}")
+
+    def prepare_text(self, gui_cfg, remove_keys=()):
+        base = self.read_disk()
+        for key in remove_keys:
+            _delete_dotted(base, key)
+        merged = deep_merge(base, gui_cfg, REPLACE_KEYS)
+        return to_toml_string(merged)
+
+    def commit(self, text):
+        """Atomic write with mandatory backup and optimistic concurrency check."""
+        os.makedirs(os.path.dirname(self.save_path) or ".", exist_ok=True)
+        current = self._fingerprint()
+        if current != self.loaded_fingerprint:
+            # Programs such as Noctalia rewrite their state file right after
+            # a save (reformatting only). Only treat it as a conflict when the
+            # parsed content really differs from what we last saw.
+            try:
+                same = self.read_disk() == self.loaded_data
+            except RuntimeError:
+                same = False
+            if not same:
+                raise ExternalChange(
+                    "The file changed on disk after it was loaded.")
+            self.loaded_fingerprint = current
+
+        old_exists = os.path.exists(self.save_path)
+        old_mode = stat.S_IMODE(os.stat(self.save_path).st_mode) if old_exists else 0o600
+        if old_exists:
+            backup = self.save_path + ".bak"
+            shutil.copy2(self.save_path, backup)
+
+        fd, temp_path = tempfile.mkstemp(
+            prefix=".config-gui-", suffix=".tmp",
+            dir=os.path.dirname(self.save_path) or "."
+        )
+        try:
+            os.chmod(temp_path, old_mode)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.save_path)
+            self.loaded_fingerprint = self._fingerprint()
+            self.loaded_data = tomllib.loads(text)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+
+def fetch_umbriel_schema():
+    """Return schema JSON from the installed Umbriel binary, or a clear error."""
+    try:
+        proc = subprocess.run(
+            ["umbriel", "config", "schema", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+    except FileNotFoundError:
+        raise RuntimeError("`umbriel` was not found on PATH.")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Umbriel schema query timed out after 15 seconds.")
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or
+                            f"Umbriel exited with status {proc.returncode}").strip())
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Umbriel returned invalid schema JSON: {exc}")
+
+def _normalize_toml_11(text):
+    """Rewrite common TOML 1.1 constructs into TOML 1.0 for ``tomllib``.
+
+    * newlines / comments inside inline tables  -> collapsed onto one line
+    * trailing comma before ``}``               -> removed
+    * ``\\e`` and ``\\xHH`` escapes              -> ``\\u001b`` / ``\\u00HH``
+    """
+    out, i, n, stack = [], 0, len(text), []
+    while i < n:
+        c = text[i]
+        if text.startswith('"""', i) or text.startswith("'''", i):
+            q = text[i:i + 3]
+            j = i + 3
+            while j < n and not text.startswith(q, j):
+                j += 2 if (q == '"""' and text[j] == "\\") else 1
+            j = min(j + 3, n)
+            out.append(text[i:j])
+            i = j
+        elif c == '"':
+            j = i + 1
+            buf = ['"']
+            while j < n and text[j] != '"' and text[j] != "\n":
+                if text[j] == "\\" and j + 1 < n:
+                    nxt = text[j + 1]
+                    if nxt == "e":
+                        buf.append("\\u001b"); j += 2; continue
+                    if nxt == "x" and j + 3 < n:
+                        buf.append("\\u00" + text[j + 2:j + 4]); j += 4; continue
+                    buf.append(text[j:j + 2]); j += 2; continue
+                buf.append(text[j]); j += 1
+            if j < n and text[j] == '"':
+                buf.append('"'); j += 1
+            out.append("".join(buf))
+            i = j
+        elif c == "'":
+            j = i + 1
+            while j < n and text[j] not in "'\n":
+                j += 1
+            j = min(j + 1, n)
+            out.append(text[i:j])
+            i = j
+        elif c == "#":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            if "{" not in stack:
+                out.append(text[i:j])
+            i = j
+        elif c in "{[":
+            stack.append(c); out.append(c); i += 1
+        elif c in "}]":
+            if c == "}":
+                while out and not out[-1].strip():
+                    out.pop()
+                if out and out[-1] == ",":
+                    out.pop()
+            if stack:
+                stack.pop()
+            out.append(c); i += 1
+        elif c == "\n" and "{" in stack:
+            out.append(" "); i += 1
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+_TOML_HEADER_RE = re.compile(
+    r"""^\s*\[\[?\s*[A-Za-z0-9_\-."' ]+\s*\]\]?\s*(#.*)?$""")
+
+def _merge_lenient(base, new):
+    """Merge a parsed chunk into ``base``; arrays of tables are appended."""
+    for k, v in new.items():
+        cur = base.get(k)
+        if isinstance(cur, dict) and isinstance(v, dict):
+            _merge_lenient(cur, v)
+        elif isinstance(cur, list) and cur and isinstance(v, dict):
+            if isinstance(cur[-1], dict):
+                _merge_lenient(cur[-1], v)
+        elif (isinstance(cur, list) and isinstance(v, list)
+              and v and all(isinstance(x, dict) for x in v)):
+            cur.extend(v)
+        else:
+            base[k] = v
+
+def _toml_error_context(text, exc, radius=2):
+    m = re.search(r"line (\d+)", str(exc))
+    if not m:
+        return str(exc)
+    ln = int(m.group(1))
+    lines = text.splitlines()
+    lo, hi = max(0, ln - 1 - radius), min(len(lines), ln + radius)
+    snippet = "\n".join(
+        f"{'>' if i + 1 == ln else ' '} {i + 1:4}: {lines[i]}"
+        for i in range(lo, hi))
+    return f"{exc}\n{snippet}"
+
+def parse_toml_lenient(text):
+    """Parse TOML, tolerating TOML 1.1 syntax and isolated bad sections.
+
+    Returns ``(config | None, warnings, error_text)``.
+    """
+    try:
+        return tomllib.loads(text), [], None
+    except Exception as first_exc:
+        first_error = _toml_error_context(text, first_exc)
+
+    normalized = _normalize_toml_11(text)
+    try:
+        return tomllib.loads(normalized), [], None
+    except Exception:
+        pass
+
+    # Section-by-section salvage: a bad table no longer aborts everything.
+    chunks, header, body = [], None, []
+    for line in normalized.splitlines():
+        if _TOML_HEADER_RE.match(line):
+            chunks.append((header, body))
+            header, body = line, []
+        else:
+            body.append(line)
+    chunks.append((header, body))
+
+    config, warnings = {}, []
+    for header, body in chunks:
+        chunk_text = ("\n".join(([header] if header else []) + body)).strip()
+        if not chunk_text:
+            continue
+        try:
+            _merge_lenient(config, tomllib.loads(chunk_text))
+            continue
+        except Exception as exc:
+            chunk_err = str(exc)
+        # Retry line by line inside this section.
+        kept = 0
+        for line in body:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            try:
+                _merge_lenient(config, tomllib.loads(
+                    "\n".join(([header] if header else []) + [line])))
+                kept += 1
+            except Exception:
+                warnings.append(
+                    f"skipped in {header.strip() if header else '(root)'}: "
+                    f"{s[:80]}")
+        if kept == 0 and header:
+            warnings.append(f"section {header.strip()} not parsed: {chunk_err}")
+    if config:
+        return config, warnings, None
+    return None, warnings, first_error
+
+def fetch_noctalia_full_config():
+    """Return (config, warnings) for Noctalia's full effective config."""
+    try:
+        proc = subprocess.run(
+            ["noctalia", "config", "export", "full", "--credentials", "omit"],
+            capture_output=True, text=True, timeout=15
+        )
+    except FileNotFoundError:
+        raise RuntimeError("`noctalia` was not found on PATH.")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Noctalia config export timed out after 15 seconds.")
+    except OSError as exc:
+        raise RuntimeError(f"Could not run Noctalia config export: {exc}")
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or
+                            f"Noctalia exited with status {proc.returncode}").strip())
+    config, warnings, error = parse_toml_lenient(proc.stdout)
+    if config is None:
+        raise RuntimeError(f"Noctalia returned invalid TOML config: {error}")
+    if not isinstance(config, dict) or not config:
+        raise RuntimeError("Noctalia returned an empty config.")
+    return config, warnings
+
+KNOWN_CHOICES = {
+    "position": ["top", "bottom", "left", "right"],
+    "orientation": ["horizontal", "vertical"],
+    "align": ["left", "center", "right"],
+    "alignment": ["left", "center", "right"],
+    "title_align": ["left", "center", "right"],
+    "layer": ["top", "overlay", "auto"],
+}
+
+# Noctalia exposes no CLI command for this list; these are its documented
+# bundled palettes. Community and custom palettes are discovered from disk.
+NOCTALIA_BUILTIN_PALETTES = [
+    "Ayu", "Catppuccin", "Dracula", "Eldritch", "Gruvbox", "Kanagawa",
+    "Noctalia", "Nord", "Rosé Pine", "Tokyo-Night",
+]
+
+NOCTALIA_THEME_CHOICE_KEYS = {
+    "theme.source", "theme.builtin", "theme.community_palette",
+    "theme.custom_palette",
+}
+
+NOCTALIA_RESTRICTED_LAYER_KEYS = {"bar.default.layer", "dock.layer"}
+
+def _installed_palette_names(directory):
+    names = {
+        os.path.splitext(os.path.basename(path))[0]
+        for path in glob.glob(os.path.join(directory, "*.json"))
+        if os.path.isfile(path)
+    }
+    return sorted(names, key=str.casefold)
+
+# Palette roles documented at https://docs.noctalia.dev/noctalia/theming/palette/.
+NOCTALIA_COLOR_ROLES = [
+    "primary", "on_primary", "primary_container", "on_primary_container",
+    "secondary", "on_secondary", "secondary_container",
+    "on_secondary_container", "tertiary", "on_tertiary",
+    "tertiary_container", "on_tertiary_container", "error", "on_error",
+    "error_container", "on_error_container", "surface", "on_surface",
+    "on_surface_variant", "surface_container_low", "surface_container",
+    "surface_container_high", "surface_container_highest",
+    "outline_variant", "shadow", "scrim", "hover", "on_hover",
+]
+
+def _schema_value_choices(row):
+    vals = row.get("values")
+    if isinstance(vals, str) and vals.strip():
+        vals = re.split(r"[|,]", vals)
+    if not isinstance(vals, list):
+        return None
+    items = []
+    for v in vals:
+        if isinstance(v, dict):
+            v = v.get("value", v.get("name"))
+        if isinstance(v, str) and v.strip().strip("\"'"):
+            items.append(v.strip().strip("\"'"))
+    return items if len(items) >= 2 else None
+
+def _path_regex(path):
+    parts = re.split(r"<[^>]*>|\[\]", path)
+    return re.compile("^" + "[^.]+".join(re.escape(p) for p in parts) + "$")
+
+def flatten_schema(schema):
+    """Normalize the documented schema JSON into rows for the explorer."""
+    rows = []
+
+    def walk(node, path_hint=""):
+        if isinstance(node, list):
+            for item in node:
+                walk(item, path_hint)
+        elif isinstance(node, dict):
+            path = node.get("path") or node.get("key") or node.get("name")
+            if isinstance(path, str) and path:
+                rows.append({
+                    "path": path,
+                    "type": node.get("type", "unknown"),
+                    "default": node.get("default", ""),
+                    "range": node.get("range", ""),
+                    "values": node.get("values", node.get("accepted_values", "")),
+                    "format": node.get("format", ""),
+                    "description": node.get("description", node.get("doc", "")),
+                    "deprecated": bool(node.get("deprecated", False)),
+                })
+            else:
+                for key, value in node.items():
+                    if isinstance(value, (dict, list)):
+                        walk(value, f"{path_hint}.{key}".strip("."))
+    walk(schema)
+    # Remove duplicates while retaining the last complete representation.
+    unique = {}
+    for row in rows:
+        unique[row["path"]] = row
+    return sorted(unique.values(), key=lambda r: r["path"].casefold())
+
+def parse_toml_value(literal):
+    return tomllib.loads("value = " + literal)["value"]
+
+def schema_keys_for(source_key, category):
+    if source_key != "umbriel":
+        return set()
+    result = set()
+    sections = UMBRIEL_SCHEMA.get(category, {}) or {}
+    for options in sections.values():
+        for option in options:
+            result.add(option["key"])
+    return result
+
+class ConfigManager:
+    def __init__(self):
+        self.sources = {
+            key: ConfigSource(key, spec) for key, spec in SOURCES.items()
+        }
+        self.dynamic_schema_edits = {}
+        self.noctalia_parse_warnings = []
+        self.noctalia_full_config = {}
+        self.noctalia_full_config_error = None
+        self.schema_choice_rules = []
+        self.reload_sources()
+        try:
+            (self.noctalia_full_config,
+             self.noctalia_parse_warnings) = fetch_noctalia_full_config()
+        except RuntimeError as exc:
+            self.noctalia_full_config_error = str(exc)
+        try:
+            for row in flatten_schema(fetch_umbriel_schema()):
+                choices = _schema_value_choices(row)
+                if choices:
+                    self.schema_choice_rules.append(
+                        (_path_regex(row["path"]), choices))
+        except Exception:
+            pass
+
+    def reload_sources(self):
+        for source in self.sources.values():
+            source.load()
+
+    def display_config(self, source_key):
+        source = self.sources[source_key]
+        if source_key != "noctalia" or not self.noctalia_full_config:
+            return source.merged
+        result = copy.deepcopy(self.noctalia_full_config)
+        return deep_merge(result, source.merged, REPLACE_KEYS)
+
+    def get_value(self, source_key, key):
+        return _get_dotted(self.sources[source_key].merged, key)
+
+    def category_sections(self, source_key, category):
+        source = self.sources[source_key]
+        display_config = self.display_config(source_key)
+        schema_keys = schema_keys_for(source_key, category)
+        sections = []
+
+        if source_key == "noctalia" and category == "Dock":
+            enabled = _get_dotted(source.merged, "dock.enabled")
+            default_only = enabled is None
+            if default_only:
+                enabled = _get_dotted(display_config, "dock.enabled")
+            if enabled is None:
+                enabled = False
+            sections.append(("Dock", [("dock.enabled", enabled, default_only)]))
+
+        discovered = {}
+        for key, value in iter_leaf_entries(display_config):
+            if key in schema_keys:
+                continue
+            if (source_key == "noctalia" and category == "Dock"
+                    and key == "dock.enabled"):
+                continue
+            if (source_key == "noctalia"
+                    and (key == "include" or key.startswith("include."))):
+                continue
+            if categorize_key(source_key, key) != category:
+                continue
+            parent = key.rsplit(".", 1)[0] if "." in key else "(root)"
+            is_default = (
+                source_key == "noctalia"
+                and _get_dotted(source.merged, key) is None
+            )
+            discovered.setdefault(parent, []).append((key, value, is_default))
+
+        sections.extend(
+            (f"{source.name} · {section_name}", items)
+            for section_name, items in discovered.items())
+        return sections
+
+    def choices_for(self, source_key, key, current):
+        if not isinstance(current, str) or _looks_like_hex_color(current):
+            return None
+        if (source_key == "noctalia"
+                and key in NOCTALIA_RESTRICTED_LAYER_KEYS):
+            return ["top", "overlay"]
+        if source_key == "noctalia":
+            if key == "theme.source":
+                return ["builtin", "wallpaper", "community", "custom"]
+            if key == "theme.builtin":
+                return list(NOCTALIA_BUILTIN_PALETTES)
+            if key in ("theme.community_palette", "theme.custom_palette"):
+                directory = (
+                    NOCTALIA_COMMUNITY_PALETTE_DIR
+                    if key == "theme.community_palette"
+                    else NOCTALIA_CUSTOM_PALETTE_DIR)
+                choices = _installed_palette_names(directory)
+                if current and current not in choices:
+                    choices.append(current)
+                return choices
+        if source_key == "umbriel":
+            for pattern, choices in self.schema_choice_rules:
+                if pattern.match(key):
+                    return list(choices)
+        known = KNOWN_CHOICES.get(key.rsplit(".", 1)[-1])
+        if known and current in known:
+            return list(known)
+        return None
+
+    def noctalia_user_files(self):
+        source = self.sources["noctalia"]
+        return [
+            path for path in source.resolve_load_paths()
+            if os.path.dirname(path) == NOCTALIA_CONFIG_DIR
+            and os.path.exists(path)
+        ]
+
+    def fetch_schema(self):
+        payload = fetch_umbriel_schema()
+        return payload, flatten_schema(payload)
+
+    def schema_explorer_entries(self, rows):
+        cfg = self.sources["umbriel"].merged
+        entries = []
+        for row in rows:
+            path = row["path"]
+            current = self.dynamic_schema_edits.get(path, _get_dotted(cfg, path))
+            if path in self.dynamic_schema_edits:
+                status = "pending edit"
+            else:
+                status = "configured" if current is not None else "not set"
+            if row.get("deprecated"):
+                status = "deprecated"
+            values = (
+                row.get("type", "unknown"),
+                json.dumps(row.get("default"), ensure_ascii=False)
+                    if row.get("default") != "" else "",
+                json.dumps(row.get("range"), ensure_ascii=False)
+                    if row.get("range") not in ("", None) else "",
+                json.dumps(row.get("values"), ensure_ascii=False)
+                    if row.get("values") not in ("", None) else "",
+                status,
+            )
+            entries.append((row, values, ()))
+
+        known = {row["path"] for row in rows}
+        aot_roots = {path.split("[]", 1)[0] for path in known if "[]" in path}
+        for key, value in iter_leaf_entries(cfg):
+            if key in known or key in aot_roots:
+                continue
+            row = {
+                "path": key,
+                "type": infer_kind(value),
+                "default": "",
+                "range": "",
+                "values": "",
+                "description": (
+                    "Present in the current configuration but not listed by "
+                    "the installed Umbriel schema."),
+                "unsupported": True,
+            }
+            entries.append((
+                row, (row["type"], "", "", "", "unknown key"), ("unknown",)))
+        return entries
+
+    def prepare_source(self, source_key, form_state):
+        source = self.sources[source_key]
+        if source.load_errors:
+            return {
+                "ok": False,
+                "fatal": True,
+                "title": f"{source.name}: configuration load error",
+                "body": (
+                    "One or more source files could not be parsed. Fix or "
+                    "move these files, then Reload before saving:\n\n"
+                    + "\n".join(source.load_errors)),
+                "warnings": [],
+            }
+        try:
+            cfg, warnings = self.collect_for_source(source_key, form_state)
+            remove_keys = [
+                full.split(":", 1)[1]
+                for full, meta in form_state["metadata"].items()
+                if full.startswith(source_key + ":")
+                and meta.get("default_only")
+            ]
+            text = source.prepare_text(cfg, remove_keys)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "fatal": True,
+                "title": f"{source.name}: prepare failed",
+                "body": f"Could not build config text:\n\n{exc}",
+                "warnings": [],
+            }
+        result = self._prepare_and_validate(source_key, text)
+        result["text"] = text
+        result["warnings"] = warnings
+        return result
+
+    def prepare_all(self, form_state):
+        return {
+            key: self.prepare_source(key, form_state)
+            for key in self.sources
+        }
+
+    def collect_for_source(self, source_key, form_state):
+        cfg = {}
+        warnings = []
+        metadata = form_state["metadata"]
+        for full, raw in form_state["variables"].items():
+            src_key, key = full.split(":", 1)
+            if src_key != source_key:
+                continue
+            meta = metadata.get(full, {})
+            kind = meta.get("kind")
+
+            if (meta.get("default_only") and kind == "list"
+                    and str(raw) == ", ".join(
+                        str(item) for item in meta["default_value"])):
+                continue
+
+            if (source_key == "umbriel"
+                    and key == "animation.windows_opacity.curve"
+                    and not str(raw).strip()):
+                raw = DEFAULT_ANIMATION_CURVE
+
+            if kind == "list":
+                item_type = meta.get("item_type", "str")
+                items = [item.strip() for item in str(raw).split(",")
+                         if item.strip()]
+                converted = []
+                for item in items:
+                    try:
+                        if item_type in ("float", "float64"):
+                            converted.append(float(item))
+                        elif item_type in ("int", "int64"):
+                            converted.append(int(item))
+                        else:
+                            converted.append(item)
+                    except ValueError:
+                        converted.append(item)
+                value = converted
+            elif kind == "number":
+                number_type = meta.get("number_type", "float")
+                try:
+                    numeric = float(raw)
+                    if number_type == "int" and not numeric.is_integer():
+                        raise ValueError
+                    value = int(numeric) if number_type == "int" else numeric
+                except (OverflowError, TypeError, ValueError) as exc:
+                    expected = "integer" if number_type == "int" else "number"
+                    raise ValueError(
+                        f"{key} must be a valid {expected} value "
+                        f"(got {raw!r})") from exc
+            elif kind == "boolean":
+                value = bool(raw)
+            else:
+                value = raw
+
+            if meta.get("default_only") and value == meta.get("default_value"):
+                continue
+            _set_dotted(cfg, key, value)
+
+        for full, text in form_state["raw_blocks"].items():
+            src_key, key = full.split(":", 1)
+            if src_key != source_key:
+                continue
+            meta = metadata.get(full, {})
+            if not text:
+                value = []
+                if (meta.get("default_only")
+                        and value == meta.get("default_value")):
+                    continue
+                _set_dotted(cfg, key, value)
+                continue
+            try:
+                parsed = tomllib.loads(text)
+                value = _get_dotted(parsed, key) or []
+                if meta.get("default_only") and value == meta.get("default_value"):
+                    continue
+                _set_dotted(cfg, key, value)
+            except Exception as exc:
+                warnings.append(
+                    f"Could not parse {key} block — using previous value.\n\n{exc}")
+                cfg[key] = self.sources[source_key].merged.get(key, [])
+
+        if source_key == "umbriel":
+            for key, value in form_state["dynamic_schema_edits"].items():
+                _set_dotted(cfg, key, value)
+
+        keybind_rows = form_state["keybind_rows"]
+        if source_key == "umbriel" and (
+                keybind_rows or form_state["keybinds_touched"]):
+            keybinds = {}
+            for key, action, options in keybind_rows:
+                key = key.strip()
+                if not key:
+                    continue
+                action = action.strip()
+                parsed_options = _parse_kb_options(options)
+                if parsed_options:
+                    entry = {"action": action}
+                    entry.update(parsed_options)
+                    keybinds[key] = entry
+                else:
+                    keybinds[key] = action
+            cfg["keybinds"] = keybinds
+        return cfg, warnings
+
+    def _prepare_and_validate(self, source_key, text):
+        source = self.sources[source_key]
+        try:
+            tomllib.loads(text)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "fatal": True,
+                "title": f"{source.name}: TOML syntax error",
+                "body": f"The generated TOML could not be parsed:\n\n{exc}",
+            }
+
+        fd, temp_path = tempfile.mkstemp(
+            suffix=".toml", prefix=f"{source_key}-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.write(text)
+            report = run_official_validator(source_key, temp_path)
+            if not report["installed"]:
+                return {
+                    "ok": True,
+                    "fatal": False,
+                    "title": f"{source.name}: validator not installed",
+                    "body": (
+                        f"`{source_key} config validate` was not found on PATH,\n"
+                        "so validation was skipped.\n\n"
+                        "The generated TOML parses cleanly via tomllib.\n"
+                        "Install Umbriel/Noctalia to enable full validation."),
+                }
+
+            body = format_diagnostics(
+                report["diagnostics"], report["raw"])
+            if not report["ok"]:
+                return {
+                    "ok": False,
+                    "fatal": True,
+                    "title": (
+                        f"{source.name}: validation FAILED — not saved"),
+                    "body": body,
+                }
+            if report["diagnostics"]:
+                return {
+                    "ok": True,
+                    "fatal": False,
+                    "title": f"{source.name}: valid (with warnings)",
+                    "body": body + "\n\nThe file will be saved.",
+                }
+            return {"ok": True, "fatal": False, "title": None, "body": None}
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    def commit(self, source_key, text, confirm_overwrite):
+        source = self.sources[source_key]
+        try:
+            source.commit(text)
+        except ExternalChange:
+            if not confirm_overwrite(source):
+                raise RuntimeError("Save cancelled: file changed on disk.")
+            source.loaded_fingerprint = source._fingerprint()
+            source.commit(text)
+        source.merged = tomllib.loads(text)
