@@ -4,6 +4,8 @@ A desktop configuration editor for **Noctalia Shell** and **Umbriel**. Browse
 settings in a searchable CustomTkinter interface, validate changes, and save
 them back to their configuration files.
 
+![Noctalia Util GUI](./docs/noctalia.png)
+
 **Python 3.11+** · **CustomTkinter 6+** · **[MIT License](./LICENSE)**
 
 [Features](#whats-included) · [Config files](#configuration-files) ·
