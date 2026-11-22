@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec /opt/noctalia-util-gui/venv/bin/noctalia-util-gui "$@"

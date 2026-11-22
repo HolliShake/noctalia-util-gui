@@ -13,6 +13,9 @@ UI highlights
 Configuration loading and persistence live in :mod:`config`.
 """
 
+import sys
+from pathlib import Path
+
 import customtkinter as ctk
 import tkinter as tk
 import tkinter.font as tkfont
@@ -1685,10 +1688,26 @@ class App:
             self._suspend_dirty = False
 
 # ---------------------------------------------------------------------------
-if __name__ == "__main__":
+def _set_window_icon(root: tk.Tk):
+    icon_dir = Path(__file__).resolve().parent / "data"
+    if not icon_dir.is_dir():
+        icon_dir = Path(sys.prefix) / "share" / "noctalia-util-gui" / "data"
+    icon_image = tk.PhotoImage(file=str(icon_dir / "noctalia-util-gui.png"))
+    root.iconphoto(True, icon_image)
+    setattr(root, "_window_icon", icon_image)
+    if sys.platform == "win32":
+        root.iconbitmap(str(icon_dir / "noctalia-util-gui.ico"))
+
+
+def main():
     ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
     root = ctk.CTk()
+    _set_window_icon(root)
     apply_ttk_theme()
     App(root)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

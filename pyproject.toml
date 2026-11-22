@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noctalia-util-gui"
+version = "0.1.0"
+description = "Desktop configuration editor for Noctalia Shell and Umbriel"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = ["customtkinter>=6.0"]
+
+[project.scripts]
+noctalia-util-gui = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "config", "number_input"]
+
+[tool.setuptools.data-files]
+"share/noctalia-util-gui/data" = [
+    "data/noctalia-util-gui.svg",
+    "data/noctalia-util-gui.png",
+    "data/noctalia-util-gui.ico",
+]

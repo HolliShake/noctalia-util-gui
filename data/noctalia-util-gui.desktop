@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Noctalia Util GUI
+Comment=Edit Noctalia Shell and Umbriel configuration
+Exec=/usr/local/bin/noctalia-util-gui
+TryExec=/usr/local/bin/noctalia-util-gui
+Icon=/usr/local/share/pixmaps/noctalia-util-gui.png
+Terminal=false
+Categories=System;

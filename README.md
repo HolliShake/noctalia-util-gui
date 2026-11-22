@@ -116,6 +116,27 @@ Palette discovery uses:
 
 Python 3.11 or newer is required for the standard-library `tomllib` module.
 
+To install the application system-wide, including its desktop-menu entry and
+icon under the System category:
+
+```bash
+./install.sh
+```
+
+Run it as your desktop user; it builds a wheel, then uses `sudo` to install an
+isolated virtual environment under `/opt/noctalia-util-gui`. The launcher and
+desktop entry are installed as `noctalia-util-gui` under `/usr/local`. Python
+must include Tkinter and virtual-environment support; install your
+distribution’s Tkinter package if the installer reports it missing. The first
+install needs access to PyPI to build the wheel and install CustomTkinter.
+The desktop entry uses an absolute PNG pixmap path for reliable menu display;
+the SVG is also installed in the hicolor icon theme. The app window uses the
+PNG icon and a dedicated ICO on Windows. The installer removes the previous
+user-local launcher and desktop entry for this app so they do not shadow the
+system installation. It does not modify other applications.
+
+To run from a source checkout instead:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -130,10 +151,13 @@ commands, but CLI-dependent features will be unavailable.
 
 ## Project layout
 
+- [`pyproject.toml`](./pyproject.toml) — wheel metadata, console script, and
+  packaged icon assets.
 - [`main.py`](./main.py) — CustomTkinter interface and user interactions.
 - [`config.py`](./config.py) — configuration sources, schemas, TOML handling,
   validation, and persistence.
 - [`number_input.py`](./number_input.py) — reusable bounded numeric slider.
+- [`tests/test_app_icon.py`](./tests/test_app_icon.py) — window icon handling.
 - [`tests/test_config_smoke.py`](./tests/test_config_smoke.py) — config
   collection, type-preserving save, and choice-discovery smoke tests.
 
